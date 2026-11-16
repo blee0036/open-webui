@@ -167,7 +167,9 @@
 		</p>{/if}
 	<div class="space-y-2">
 		{#each upstreams as upstream, index}
-			<div class="flex flex-wrap items-center gap-2 rounded-xl bg-gray-50 p-3 text-sm dark:bg-gray-900">
+			<div
+				class="flex flex-wrap items-center gap-2 rounded-xl bg-gray-50 p-3 text-sm dark:bg-gray-900"
+			>
 				<input type="checkbox" bind:checked={upstream.enabled} aria-label={$i18n.t('Use')} />
 				{#if upstream.preset}
 					<span class="font-medium">{$i18n.t(upstream.name)}</span>
@@ -233,11 +235,17 @@
 				)}</label
 			>
 			<label class="flex items-center gap-2"
-				><input type="checkbox" bind:checked={onlyPriced} />{$i18n.t('Only models already priced')}</label
+				><input type="checkbox" bind:checked={onlyPriced} />{$i18n.t(
+					'Only models already priced'
+				)}</label
 			>
 			<span class="text-gray-500">{filtered.length} {$i18n.t('differences')}</span>
-			<button class="underline" on:click={() => selectVisible(true)}>{$i18n.t('Select shown')}</button>
-			<button class="underline" on:click={() => selectVisible(false)}>{$i18n.t('Clear shown')}</button>
+			<button class="underline" on:click={() => selectVisible(true)}
+				>{$i18n.t('Select shown')}</button
+			>
+			<button class="underline" on:click={() => selectVisible(false)}
+				>{$i18n.t('Clear shown')}</button
+			>
 		</div>
 		<div class="divide-y divide-gray-100 dark:divide-gray-800">
 			{#each filtered.slice(0, shown) as row (row.model_id)}
@@ -287,7 +295,10 @@
 		{#if filtered.length > shown}<button class="text-sm underline" on:click={() => (shown += PAGE)}
 				>{$i18n.t('Show more')} ({filtered.length - shown})</button
 			>{/if}
-		<form class="flex flex-wrap gap-3 border-t border-gray-200 pt-4 dark:border-gray-800" on:submit|preventDefault={apply}>
+		<form
+			class="flex flex-wrap gap-3 border-t border-gray-200 pt-4 dark:border-gray-800"
+			on:submit|preventDefault={apply}
+		>
 			<input
 				class="field min-w-48 flex-1"
 				required

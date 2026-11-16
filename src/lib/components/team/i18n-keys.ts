@@ -1,0 +1,88 @@
+// Team workspace labels translated through variables ($i18n.t(item[1]), plan.unit,
+// row.action, entry.state, ternaries, upstream preset names...). i18next-parser only
+// sees literal calls, so register them here or `npm run i18n:parse` drops their
+// translations. Same convention as src/lib/apis/notifications/inbox.ts.
+
+// Admin tabs and package settings
+// t('Packages')
+// t('Member quota')
+// t('Reconciliation')
+// t('Edit package')
+// t('requests')
+// t('credits')
+// t('day')
+// t('week')
+// t('month')
+// t('days')
+// t('never')
+
+// Adjustment history actions (QuotaAudit.action)
+// t('default_plan')
+// t('create_plan')
+// t('update_plan')
+// t('assign')
+// t('bonus')
+// t('price')
+// t('reconcile')
+// t('enterprise_connection')
+// t('enterprise_identity_link')
+// t('enterprise_user_created')
+// t('project_context_update')
+// t('project_file_publish')
+// t('project_file_unpublish')
+
+// Quota page and badge
+// t('requests left')
+// t('credits left')
+// t('Personal package')
+// t('Temporary bonus')
+// t('Settled usage')
+// t('Overage')
+// t('Input / Output tokens')
+// t('Charge / Reserved')
+// t('reserved')
+// t('settled')
+// t('released')
+
+// Projects
+// t('Project context')
+// t('Conversations')
+// t('Reference files')
+// t('Add references')
+// t('Processing…')
+// t('Shared with project')
+// t('Private conversation')
+// t('Make private')
+// t('Share with project')
+// t('{{count}} reference files')
+
+// Execution workspace
+// t('Rebuild the container and stop running processes?')
+// t('Permanently clear your workspace files?')
+// t('Allow public HTTP(S) access?')
+// t('Start workspace')
+// t('Stop workspace')
+// t('Resume Agent queue')
+// t('Take manual control')
+// t('Enable public access')
+// t('Go offline')
+// t('Offline')
+// t('Public HTTP(S)')
+// t('Agent is running')
+// t('Agent execution queued')
+// t('Resource center')
+// t('{{count}} waiting')
+// t('Stopped')
+// t('Queued')
+// t('Starting')
+// t('Timed out')
+
+// Enterprise login and price sync
+// t('Enabled')
+// t('Disabled')
+// t('New-API official ratio preset')
+// t('models.dev price preset')
+// t('Fetching…')
+// t('Compare prices')
+
+export {};

@@ -74,16 +74,6 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # Tags created with GITHUB_TOKEN do not trigger workflows, so dispatch the
-      # team image build on the release tag to publish the vX.Y.Z image tags.
-      # (Upstream's docker.yaml is disabled in this fork.)
-      - name: Trigger team image build
-        uses: actions/github-script@v8.0.0
-        with:
-          script: |
-            await github.rest.actions.createWorkflowDispatch({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              workflow_id: 'team-images.yaml',
-              ref: 'v${{ steps.pkg.outputs.version }}',
-            })
+      # No image dispatch here: in this fork team-images.yaml already builds every
+      # push to main (and every v* tag you push yourself). The release tag carries
+      # the upstream version and may point at an older commit without that workflow.

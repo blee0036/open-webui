@@ -233,10 +233,7 @@
 					</div>{/each}
 			</div>
 		{:else if tab === 'context'}
-			<form
-				class="my-6 max-w-2xl space-y-5"
-				on:submit|preventDefault={() => saveContext()}
-			>
+			<form class="my-6 max-w-2xl space-y-5" on:submit|preventDefault={() => saveContext()}>
 				<label class="block text-sm"
 					>{$i18n.t('Project name')}<input
 						class="mt-2 w-full rounded-xl border border-gray-200 bg-transparent px-3 py-2.5 dark:border-gray-700"
