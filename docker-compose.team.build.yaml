@@ -1,0 +1,17 @@
+# Local builds instead of the prebuilt GHCR images, for development or air-gapped hosts:
+#   docker compose -f docker-compose.team.yaml -f docker-compose.team.build.yaml build
+#   docker compose -f docker-compose.team.yaml -f docker-compose.team.build.yaml up -d
+# Set TEAM_IMAGE_REGISTRY=local (or any name) so built images never shadow the GHCR tags.
+# The frontend build needs a large Node heap (up to 12 GiB); prefer building on another machine.
+services:
+  open-webui:
+    build:
+      context: .
+      args:
+        USE_EMBEDDING_MODEL: BAAI/bge-m3
+  sandbox:
+    build: ./services/sandbox
+  runtime-image:
+    build:
+      context: ./services/sandbox
+      dockerfile: runtime.Dockerfile

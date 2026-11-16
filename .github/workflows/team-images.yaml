@@ -1,0 +1,182 @@
+name: Team images (GHCR)
+
+# Prebuilt, multi-arch images for docker-compose.team.yaml:
+#   ghcr.io/<owner>/open-webui-team              WebUI with the bge-m3 embedding model baked in
+#   ghcr.io/<owner>/open-webui-sandbox-controller sandbox lifecycle controller and egress proxy
+#   ghcr.io/<owner>/open-webui-sandbox-runtime    per-workspace runtime (Open Terminal based)
+# Every image of one run carries the same tags (latest, sha-<commit>, vX.Y.Z), so
+# TEAM_IMAGE_TAG pins a consistent set. Each architecture builds on a native runner.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    tags: ['v*']
+
+concurrency:
+  group: team-images-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  build:
+    name: build ${{ matrix.image.name }} (${{ matrix.platform.pair }})
+    runs-on: ${{ matrix.platform.runner }}
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - arch: linux/amd64
+            pair: linux-amd64
+            runner: ubuntu-latest
+          - arch: linux/arm64
+            pair: linux-arm64
+            runner: ubuntu-24.04-arm
+        image:
+          - name: open-webui-team
+            context: .
+            file: Dockerfile
+            webui: true
+          - name: open-webui-sandbox-controller
+            context: services/sandbox
+            file: services/sandbox/Dockerfile
+            webui: false
+          - name: open-webui-sandbox-runtime
+            context: services/sandbox
+            file: services/sandbox/runtime.Dockerfile
+            webui: false
+
+    steps:
+      - name: Prepare environment
+        run: echo "FULL_IMAGE_NAME=${REGISTRY}/${GITHUB_REPOSITORY_OWNER,,}/${{ matrix.image.name }}" >> "${GITHUB_ENV}"
+
+      - name: Free disk space
+        if: matrix.image.webui
+        # The WebUI image carries torch and the ~2.3 GB bge-m3 model.
+        run: sudo rm -rf /opt/hostedtoolcache /usr/local/lib/android /usr/share/dotnet /opt/ghc
+
+      - name: Checkout repository
+        uses: actions/checkout@v5.1.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3.12.0
+
+      - name: Prepare Dockerfile
+        run: |
+          if [ "${{ matrix.image.webui }}" = "true" ]; then
+            # Same CI tweak as upstream: give the frontend build a larger Node heap.
+            awk '
+              /^FROM --platform=\$BUILDPLATFORM node:/ {
+                print
+                print "ENV NODE_OPTIONS=\"--max-old-space-size=12288\""
+                next
+              }
+              { print }
+            ' "${{ matrix.image.file }}" > "${RUNNER_TEMP}/Dockerfile"
+          else
+            cp "${{ matrix.image.file }}" "${RUNNER_TEMP}/Dockerfile"
+          fi
+
+      - name: Log in to the Container registry
+        uses: docker/login-action@v3.7.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract labels
+        id: meta
+        uses: docker/metadata-action@v5.10.0
+        with:
+          images: ${{ env.FULL_IMAGE_NAME }}
+
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@v5.4.0
+        with:
+          context: ${{ matrix.image.context }}
+          file: ${{ runner.temp }}/Dockerfile
+          platforms: ${{ matrix.platform.arch }}
+          labels: ${{ steps.meta.outputs.labels }}
+          outputs: type=image,name=${{ env.FULL_IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=registry,ref=${{ env.FULL_IMAGE_NAME }}:buildcache-${{ matrix.platform.pair }}
+          cache-to: type=registry,ref=${{ env.FULL_IMAGE_NAME }}:buildcache-${{ matrix.platform.pair }},mode=max
+          build-args: |
+            BUILD_HASH=${{ github.sha }}
+            BUILD_CHANNEL=main
+            ${{ matrix.image.webui && 'USE_EMBEDDING_MODEL=BAAI/bge-m3' || '' }}
+
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v4.6.2
+        with:
+          name: digests-${{ matrix.image.name }}-${{ matrix.platform.pair }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    name: publish ${{ matrix.image }}
+    runs-on: ubuntu-latest
+    needs: [build]
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [open-webui-team, open-webui-sandbox-controller, open-webui-sandbox-runtime]
+
+    steps:
+      - name: Prepare environment
+        run: echo "FULL_IMAGE_NAME=${REGISTRY}/${GITHUB_REPOSITORY_OWNER,,}/${{ matrix.image }}" >> "${GITHUB_ENV}"
+
+      - name: Download digests
+        uses: actions/download-artifact@v5.0.0
+        with:
+          pattern: digests-${{ matrix.image }}-*
+          path: /tmp/digests
+          merge-multiple: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3.12.0
+
+      - name: Log in to the Container registry
+        uses: docker/login-action@v3.7.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract tags
+        id: meta
+        uses: docker/metadata-action@v5.10.0
+        with:
+          images: ${{ env.FULL_IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,prefix=sha-,format=short
+            type=semver,pattern=v{{version}}
+            type=semver,pattern=v{{major}}.{{minor}}
+          flavor: latest=false
+
+      - name: Create multi-arch manifest
+        working-directory: /tmp/digests
+        run: |
+          test "$(ls | wc -l)" -eq 2 || { echo "Expected amd64 and arm64 digests"; ls; exit 1; }
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "${DOCKER_METADATA_OUTPUT_JSON}") \
+            $(printf "${FULL_IMAGE_NAME}@sha256:%s " *)
+
+      - name: Inspect image
+        run: docker buildx imagetools inspect "${FULL_IMAGE_NAME}:${{ steps.meta.outputs.version }}"

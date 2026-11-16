@@ -124,6 +124,15 @@ def client():
         api.close()
 
 
+def ensure_image(api, image):
+    """The Docker API never pulls on create; fetch a missing prebuilt image (e.g. from GHCR)."""
+    try:
+        api.images.get(image)
+    except docker.errors.ImageNotFound:
+        repository, _, tag = image.rpartition(':') if ':' in image.rsplit('/', 1)[-1] else (image, '', 'latest')
+        api.images.pull(repository, tag=tag)
+
+
 def get_workspace(user_id, project_id):
     if len(user_id) > 100 or len(project_id) > 100 or not user_id or not project_id:
         raise HTTPException(400, 'Invalid workspace scope')
@@ -213,6 +222,8 @@ def start_runtime(row):
             proxy_url = 'http://' + egress.attrs['NetworkSettings']['Networks'][network_name]['IPAddress'] + ':3128'
         runtime = container_for(api, row)
         if runtime is None:
+            ensure_image(api, IMAGE)
+            ensure_image(api, HELPER_IMAGE)
             volume = api.volumes.create(name=name(row) + '-home', labels=LABEL)
             # Named volumes inherit the image's non-root home ownership on first mount.
             runtime = api.containers.create(

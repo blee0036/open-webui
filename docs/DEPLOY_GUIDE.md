@@ -44,7 +44,7 @@ openssl version
 ls docker-compose.team.yaml deploy/team/.env.example
 ```
 
-容量不要只按 WebUI 网页估算。推荐 **8 核 / 32 GB**：默认最多同时运行 10 个沙盒，每个上限 1 CPU、2 GiB（上限不是预留，CPU 共享），满载约 20 GiB；其余留给 WebUI（1–2 GB）、本地 Embedding（bge-m3 约 2–3 GB）、数据库与系统。主机较小时按每个沙盒约 2 GiB 空闲内存调低 `SANDBOX_MAX_RUNNING`，例如 16 GB 主机设为 2–4。前端构建的 Node 堆上限为 12 GiB，应在其他机器构建镜像，或为构建过程另留空间。
+容量不要只按 WebUI 网页估算。推荐 **8 核 / 32 GB**：默认最多同时运行 10 个沙盒，每个上限 1 CPU、2 GiB（上限不是预留，CPU 共享），满载约 20 GiB；其余留给 WebUI（1–2 GB）、本地 Embedding（bge-m3 约 2–3 GB）、数据库与系统。主机较小时按每个沙盒约 2 GiB 空闲内存调低 `SANDBOX_MAX_RUNNING`，例如 16 GB 主机设为 2–4。镜像由 CI 预编译，服务器无需为构建预留内存；若自行构建，前端构建的 Node 堆上限为 12 GiB，应在其他机器进行。
 
 **创建管理员之前，先把 HTTPS 入口限定为部署人员可访问。** 新数据库的第一个账号会成为管理员，创建完成后再开放给试点员工。
 
@@ -82,16 +82,18 @@ openssl rand -hex 32
 
 保存并备份 `.env.team` 到受控密钥存储，不提交到 Git。**后续重启或升级继续使用这些密钥，不重新生成。**
 
-### 2.2 检查配置、构建并启动
+### 2.2 检查配置、拉取镜像并启动
+
+WebUI、沙盒控制器和沙盒运行环境三个镜像由 GitHub Actions（`.github/workflows/team-images.yaml`）预编译为 amd64／arm64 双架构，发布在 `ghcr.io/blee0036/`，服务器上不需要构建。`TEAM_IMAGE_TAG` 默认 `latest`（跟随 main），正式环境建议固定为 `sha-<提交>` 或 `vX.Y.Z`，三个镜像共用同一个标签。
 
 ```bash
 # 校验配置；成功时不输出内容。报错时先补齐对应的配置项。
 docker compose --env-file .env.team -f docker-compose.team.yaml config --quiet
 
-# 构建 WebUI、沙盒控制器与沙盒运行镜像。
-docker compose --env-file .env.team -f docker-compose.team.yaml --profile build build
+# 拉取全部镜像，包括沙盒运行环境（runtime-image 只用于拉取，启动后会立即退出）。
+docker compose --env-file .env.team -f docker-compose.team.yaml pull
 
-# 启动常驻服务。runtime-image 只用于构建，不需要手动运行。
+# 启动常驻服务。
 docker compose --env-file .env.team -f docker-compose.team.yaml up -d \
   postgres egress sandbox searxng open-webui
 
@@ -108,7 +110,9 @@ docker compose --env-file .env.team -f docker-compose.team.yaml ps
 | `egress`     | 用户启用公网访问后，限制沙盒只能访问允许的公网 HTTP(S) 目标 |
 | `searxng`    | 自托管联网搜索，不需要第三方搜索 API Key                    |
 
-`postgres` 应显示健康，其他服务应处于运行状态；用户沙盒是在用户使用时才创建的，不会预先出现四个容器。控制器默认只有一个 worker，保持单实例运行。
+`postgres` 应显示健康，其他服务应处于运行状态；用户沙盒是在用户使用时才创建的，不会预先出现。若运行环境镜像尚未拉取，控制器会在首次创建沙盒时自动拉取。
+
+需要自行构建（开发或无法访问 GHCR）时，叠加构建文件：`docker compose --env-file .env.team -f docker-compose.team.yaml -f docker-compose.team.build.yaml build`，并把 `TEAM_IMAGE_REGISTRY` 改为 `local` 之类的本地名称，避免覆盖 GHCR 标签。控制器默认只有一个 worker，保持单实例运行。
 
 在**服务器上**检查 WebUI：
 
@@ -331,6 +335,11 @@ docker compose --env-file .env.team -f docker-compose.team.yaml ps
 docker compose --env-file .env.team -f docker-compose.team.yaml logs --tail=100 open-webui sandbox
 
 # 修改 Compose 环境变量后重新应用配置；restart 不会更新容器环境变量
+docker compose --env-file .env.team -f docker-compose.team.yaml up -d \
+  postgres egress sandbox searxng open-webui
+
+# 升级：先备份，再拉取新镜像并重建容器（数据卷保留）
+docker compose --env-file .env.team -f docker-compose.team.yaml pull
 docker compose --env-file .env.team -f docker-compose.team.yaml up -d \
   postgres egress sandbox searxng open-webui
 ```

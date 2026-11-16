@@ -1,5 +1,14 @@
 # New deployments only. Do not attach an existing vector database to this file.
+# Images are prebuilt for linux/amd64 and linux/arm64 by .github/workflows/team-images.yaml.
+# Update: docker compose -f docker-compose.team.yaml pull && docker compose -f docker-compose.team.yaml up -d
+# Build locally instead: add -f docker-compose.team.build.yaml (see that file).
+# Pin a release with TEAM_IMAGE_TAG (latest, sha-<commit>, or a vX.Y.Z tag); all three images share it.
 name: ${TEAM_DEPLOYMENT_NAME:-open-webui-team}
+
+x-team-images:
+  webui: &webui-image ${TEAM_IMAGE_REGISTRY:-ghcr.io/blee0036}/open-webui-team:${TEAM_IMAGE_TAG:-latest}
+  controller: &controller-image ${TEAM_IMAGE_REGISTRY:-ghcr.io/blee0036}/open-webui-sandbox-controller:${TEAM_IMAGE_TAG:-latest}
+  runtime: &runtime-image ${TEAM_IMAGE_REGISTRY:-ghcr.io/blee0036}/open-webui-sandbox-runtime:${TEAM_IMAGE_TAG:-latest}
 services:
   postgres:
     image: pgvector/pgvector:pg17
@@ -18,11 +27,7 @@ services:
     restart: unless-stopped
 
   open-webui:
-    image: open-webui-team:0.13.3
-    build:
-      context: .
-      args:
-        USE_EMBEDDING_MODEL: BAAI/bge-m3
+    image: *webui-image
     environment:
       WEBUI_URL: ${WEBUI_URL:?Set the externally reachable HTTPS URL}
       CORS_ALLOW_ORIGIN: ${WEBUI_URL}
@@ -55,10 +60,12 @@ services:
     restart: unless-stopped
 
   sandbox:
-    image: open-webui-sandbox-controller:1
-    build: ./services/sandbox
+    image: *controller-image
     container_name: ${SANDBOX_NAMESPACE:-owui}-sandbox
     environment:
+      # The controller creates runtimes and firewall helpers itself; it must use the same images.
+      SANDBOX_RUNTIME_IMAGE: *runtime-image
+      SANDBOX_CONTROLLER_IMAGE: *controller-image
       SANDBOX_CONTROLLER_KEY: ${SANDBOX_CONTROLLER_KEY}
       SANDBOX_CONTROLLER_CONTAINER: ${SANDBOX_NAMESPACE:-owui}-sandbox
       SANDBOX_PROXY_CONTAINER: ${SANDBOX_NAMESPACE:-owui}-egress
@@ -74,7 +81,7 @@ services:
     restart: unless-stopped
 
   egress:
-    image: open-webui-sandbox-controller:1
+    image: *controller-image
     container_name: ${SANDBOX_NAMESPACE:-owui}-egress
     command: [python, /app/public_proxy.py]
     user: '65534:65534'
@@ -89,14 +96,12 @@ services:
     restart: unless-stopped
 
   runtime-image:
-    image: open-webui-sandbox-runtime:0.17.7
-    build:
-      context: ./services/sandbox
-      dockerfile: runtime.Dockerfile
-    profiles: [build]
-    # Build only; never start a runtime outside the lifecycle controller.
+    image: *runtime-image
+    # Pull-only: lets `docker compose pull` fetch/refresh the runtime image. It exits
+    # immediately; real runtimes are only ever started by the lifecycle controller.
     entrypoint: [/bin/true]
     network_mode: none
+    restart: 'no'
 
   searxng:
     image: ${SEARXNG_IMAGE:-searxng/searxng:latest}
