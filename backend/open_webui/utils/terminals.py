@@ -146,6 +146,8 @@ async def resolve_terminal_connection(request, user, metadata):
     connection = next((item for item in connections if item.get('id') == terminal_id), None)
 
     if connection:
+        from open_webui.utils.sandboxes import bind_managed_connection
+        connection = await bind_managed_connection(connection, user_model, metadata)
         terminal_context = 'automation' if metadata.get('automation_id') else 'chat'
         context_id = terminal_context_id(connection, metadata, terminal_context)
         config = terminal_context_config(connection, terminal_context)
@@ -208,7 +210,8 @@ async def get_terminal_json(
             from open_webui.storage.provider import Storage
 
             source = await Files.get_file_by_id(file['id'])
-            if not source or source.user_id != headers['X-User-Id'] or not source.path:
+            from open_webui.utils.access_control.files import has_access_to_file
+            if not source or not source.path or not await has_access_to_file(source.id, 'read', user):
                 return None
             local_path = await asyncio.to_thread(Storage.get_file, source.path)
             body = aiohttp.FormData()

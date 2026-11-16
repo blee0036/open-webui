@@ -218,6 +218,10 @@ from open_webui.tasks import (
     stop_task,
 )  # Import from tasks.py
 from open_webui.utils import logger
+from open_webui.routers import team
+from open_webui.routers import enterprise_sso
+from open_webui.routers import projects, sandboxes
+from open_webui.utils.quota_transport import model_request
 from open_webui.utils.access_control import has_permission
 from open_webui.utils.access_control.folders import has_folder_write_access
 from open_webui.utils.actions import chat_action as chat_action_handler
@@ -389,6 +393,9 @@ async def lifespan(app: FastAPI):
 
     await import_legacy_config_json()
     await seed_registered_defaults()
+    from open_webui.utils.team_policy import initialize_team_permissions
+
+    await initialize_team_permissions()
     await app.state.oauth_manager.initialize()
     from open_webui.utils.mfa import validate_mfa_configuration
 
@@ -862,6 +869,12 @@ if ENABLE_ADMIN_ANALYTICS:
     app.include_router(analytics.router, prefix='/api/v1/analytics', tags=['analytics'])
 app.include_router(utils.router, prefix='/api/v1/utils', tags=['utils'])
 app.include_router(terminals.router, prefix='/api/v1/terminals', tags=['terminals'])
+app.include_router(team.router, prefix='/api/v1/team', tags=['team'])
+app.include_router(enterprise_sso.router, prefix='/api/v1/enterprise', tags=['enterprise'])
+app.include_router(projects.router, prefix='/api/v1/projects', tags=['projects'])
+app.include_router(sandboxes.router, prefix='/api/v1/sandboxes', tags=['sandboxes'])
+from open_webui.routers import personal_connections
+app.include_router(personal_connections.router, prefix='/api/v1/personal-connections', tags=['personal connections'])
 app.include_router(automations.router, prefix='/api/v1/automations', tags=['automations'])
 app.include_router(calendar.router, prefix='/api/v1/calendars', tags=['calendars'])
 
@@ -1090,6 +1103,8 @@ async def embeddings(request: Request, form_data: dict, user=Depends(get_verifie
 
 
 async def _set_direct_model(request: Request, model_item: dict, user) -> None:
+    if await Config.get('team.enabled', False):
+        raise HTTPException(403, 'Personal model connections are disabled. Choose an administrator-managed model.')
     model_meta = (model_item.get('info') or {}).get('meta') or {}
     knowledge_items = model_meta.get('knowledge')
     if knowledge_items:
@@ -2020,7 +2035,8 @@ async def passthrough_anthropic_messages(request: Request, form_data: dict, user
 
     try:
         session = await get_session()
-        response = await session.request(
+        response = await model_request(
+            session, request, user, provider='anthropic', model_id=requested_model,
             method='POST',
             url=request_url,
             data=JSONCodec.dumps(payload),
@@ -2383,6 +2399,7 @@ async def get_app_config(request: Request):
     if user is None:
         onboarding = not await Users.has_users()
 
+    team_enabled = await Config.get('team.enabled', False)
     license_metadata = getattr(app.state, 'LICENSE_METADATA', None)
     user_count = await Users.get_num_users() if license_metadata else None
     config = await Config.get_many(
@@ -2493,13 +2510,15 @@ async def get_app_config(request: Request):
             # Authenticated: only consumed by logged-in frontend
             **(
                 {
-                    'enable_api_keys': config.get('auth.enable_api_keys'),
+                    'enable_team_workspaces': team_enabled,
+                    'enable_quota': await Config.get('team.quota.enabled', False),
+                    'enable_api_keys': config.get('auth.enable_api_keys') and not (team_enabled and user.role != 'admin'),
                     'enable_password_change_form': config.get('ui.enable_password_change_form'),
                     'enable_version_update_check': ENABLE_VERSION_UPDATE_CHECK,
                     'enable_pyodide_file_persistence': ENABLE_PYODIDE_FILE_PERSISTENCE,
                     'enable_public_active_users_count': ENABLE_PUBLIC_ACTIVE_USERS_COUNT,
                     'enable_easter_eggs': ENABLE_EASTER_EGGS,
-                    'enable_direct_connections': config.get('direct.enable'),
+                    'enable_direct_connections': config.get('direct.enable') and not team_enabled,
                     'enable_direct_integrations': ENABLE_TOOL_SERVERS
                     and config.get('direct.integrations.enable', False),
                     'enable_plugins': ENABLE_PLUGINS,
@@ -2507,10 +2526,10 @@ async def get_app_config(request: Request):
                     'enable_functions': ENABLE_FUNCTIONS,
                     'enable_tool_servers': ENABLE_TOOL_SERVERS,
                     'enable_terminal_servers': ENABLE_TOOL_SERVERS
-                    and any(
+                    and (bool(await Config.get('team.sandbox.url')) or any(
                         connection.get('enabled', True)
                         for connection in config.get('terminal_server.connections') or []
-                    ),
+                    )),
                     'enable_folders': config.get('folders.enable'),
                     'folder_max_file_count': config.get('folders.max_file_count'),
                     'enable_channels': config.get('channels.enable'),
@@ -2966,12 +2985,17 @@ async def oauth_client_authorize(
     if not ENABLE_TOOL_SERVERS:
         raise HTTPException(status_code=403, detail='Tool servers are disabled')
 
+    from open_webui.utils.personal_connections import verify_personal_oauth
+    await verify_personal_oauth(client_id, user.id)
+
     client = await oauth_client_manager.get_client(client_id)
     client_info = await oauth_client_manager.get_client_info(client_id)
     if client is None or client_info is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND)
 
     if not await oauth_client_manager._preflight_authorization_url(client, client_info):
+        if client_id.startswith('mcp:personal-'):
+            raise HTTPException(400, 'Reconnect this personal MCP connection in Settings to renew its OAuth registration')
         log.info(
             'Detected invalid OAuth client %s; attempting re-registration',
             client_id,

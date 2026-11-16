@@ -26,7 +26,8 @@
 		visibleControls,
 		selectedFolder,
 		WEBUI_NAME,
-		sidebarWidth
+		sidebarWidth,
+		activeProjectId
 	} from '$lib/stores';
 	import {
 		allLoaded,
@@ -82,6 +83,7 @@
 	import InboxBadge from './InboxBadge.svelte';
 	import { inboxCount } from '$lib/stores/inbox';
 	import UserMenu from './Sidebar/UserMenu.svelte';
+	import QuotaBadge from '$lib/components/team/QuotaBadge.svelte';
 	import ChatItem from './Sidebar/ChatItem.svelte';
 	import Spinner from '../common/Spinner.svelte';
 	import Loader from '../common/Loader.svelte';
@@ -278,7 +280,9 @@
 		folderRegistry[folder.id]?.setFolderItems?.();
 	};
 
-	$: pinnedItems = $settings?.pinnedMenuItems ?? DEFAULT_PINNED_ITEMS;
+	$: pinnedItems =
+		$settings?.pinnedMenuItems ??
+		($config?.features?.enable_team_workspaces ? ['projects'] : DEFAULT_PINNED_ITEMS);
 
 	$: isMenuItemVisible = (id) => {
 		switch (id) {
@@ -306,8 +310,11 @@
 					$config?.features?.enable_calendar &&
 					($user?.role === 'admin' || $user?.permissions?.features?.calendar)
 				);
+			case 'projects':
+			case 'environment':
+				return !!$config?.features?.enable_team_workspaces;
 			case 'playground':
-				return $user?.role === 'admin';
+				return $user?.role === 'admin' || !!$user?.permissions?.features?.playground;
 			default:
 				return false;
 		}
@@ -316,7 +323,17 @@
 	const getMenuItemMeta = (id) => {
 		const items = {
 			notes: { label: $i18n.t('Notes'), href: '/notes', iconType: 'note' },
-			workspace: { label: $i18n.t('Workspace'), href: '/workspace', iconType: 'workspace' },
+			projects: { label: $i18n.t('Projects'), href: '/projects', iconType: 'workspace' },
+			environment: {
+				label: $i18n.t('Work environment'),
+				href: '/environment',
+				iconType: 'playground'
+			},
+			workspace: {
+				label: $i18n.t($config?.features?.enable_team_workspaces ? 'Resource center' : 'Workspace'),
+				href: '/workspace',
+				iconType: 'workspace'
+			},
 			automations: { label: $i18n.t('Automations'), href: '/automations', iconType: 'automations' },
 			calendar: { label: $i18n.t('Calendar'), href: '/calendar', iconType: 'calendar' },
 			playground: { label: $i18n.t('Playground'), href: '/playground', iconType: 'playground' }
@@ -327,6 +344,8 @@
 	const menuItemPathPrefixes = {
 		notes: '/notes',
 		workspace: '/workspace',
+		projects: '/projects',
+		environment: '/environment',
 		calendar: '/calendar',
 		automations: '/automations',
 		playground: '/playground'
@@ -1080,6 +1099,7 @@
 	{/if}
 
 	<SearchModal
+		scope={$activeProjectId ? `folder:${$activeProjectId}` : ''}
 		bind:show={$showSearch}
 		onClose={() => {
 			if ($mobile) {
@@ -1219,13 +1239,13 @@
 										>
 											{#if itemId === 'notes'}
 												<NotesIcon className="size-4" strokeWidth="1.5" />
-											{:else if itemId === 'workspace'}
+											{:else if ['workspace', 'projects'].includes(itemId)}
 												<WorkspaceIcon className="size-4" strokeWidth="1.5" />
 											{:else if itemId === 'automations'}
 												<ClockIcon className="size-4" strokeWidth="1.5" />
 											{:else if itemId === 'calendar'}
 												<CalendarIcon className="size-4" strokeWidth="1.5" />
-											{:else if itemId === 'playground'}
+											{:else if ['playground', 'environment'].includes(itemId)}
 												<CodeIcon className="size-4" strokeWidth="1.5" />
 											{/if}
 										</div>
@@ -1464,13 +1484,13 @@
 											<div class="self-center flex size-4 shrink-0 items-center justify-center">
 												{#if itemId === 'notes'}
 													<NotesIcon className="size-4" strokeWidth="1.5" />
-												{:else if itemId === 'workspace'}
+												{:else if ['workspace', 'projects'].includes(itemId)}
 													<WorkspaceIcon className="size-4" strokeWidth="1.5" />
 												{:else if itemId === 'automations'}
 													<ClockIcon className="size-4" strokeWidth="1.5" />
 												{:else if itemId === 'calendar'}
 													<CalendarIcon className="size-4" strokeWidth="1.5" />
-												{:else if itemId === 'playground'}
+												{:else if ['playground', 'environment'].includes(itemId)}
 													<CodeIcon className="size-4" strokeWidth="1.5" />
 												{/if}
 											</div>
@@ -1965,6 +1985,7 @@
 					<div
 						class=" sidebar-bg-gradient-to-t bg-linear-to-t from-gray-50 dark:from-gray-950 to-transparent from-50% pointer-events-none absolute inset-0 -z-10 -mt-6"
 					></div>
+					{#if $config?.features?.enable_quota}<QuotaBadge />{/if}
 					<div class="flex flex-col">
 						{#if $user !== undefined && $user !== null}
 							<UserMenu

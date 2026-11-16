@@ -4,6 +4,7 @@ import logging
 from open_webui.env import ENABLE_FUNCTIONS
 from open_webui.models.functions import Functions
 from open_webui.utils.plugin import get_function_module_from_cache
+from open_webui.utils.quota_transport import plugin_model_request
 
 log = logging.getLogger(__name__)
 
@@ -188,7 +189,10 @@ async def process_filter_function(
     try:
         valves_by_id = await apply_filter_valves(function_module, filter_context, valves_by_id, filter_ids, filter_id)
         sig = inspect.signature(handler)
-        params = get_filter_params(sig, filter_id, filter_type, form_data, extra_params)
+        params = get_filter_params(sig, filter_id, filter_type, form_data, {
+            **extra_params,
+            '__model_request__': plugin_model_request(request, extra_params.get('__user__')),
+        })
 
         if '__user__' in sig.parameters:
             try:

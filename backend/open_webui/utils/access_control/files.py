@@ -139,16 +139,45 @@ async def has_access_to_file(
     if user.id in model_owners.values():
         return True
 
-    return bool(
-        await AccessGrants.get_accessible_resource_ids(
-            user_id=user.id,
-            resource_type='model',
-            resource_ids=list(model_owners),
-            permission=access_type,
-            user_group_ids=user_group_ids,
-            db=db,
-        )
-    )
+    if model_owners and await AccessGrants.get_accessible_resource_ids(
+        user_id=user.id,
+        resource_type='model',
+        resource_ids=list(model_owners),
+        permission=access_type,
+        user_group_ids=user_group_ids,
+        db=db,
+    ):
+        return True
+
+    # Published project references are read-only for project members. Checked last:
+    # it is the least common path for a non-owner read.
+    return access_type == 'read' and await has_project_file_access(file_id, user, db)
+
+
+async def has_project_file_access(file_id: str, user: UserModel, db: AsyncSession | None = None) -> bool:
+    from open_webui.internal.db import get_async_db_context
+    from open_webui.models.folders import Folder
+    from open_webui.utils.access_control.folders import has_folder_access
+    from sqlalchemy import String, cast, select
+
+    async with get_async_db_context(db) as session:
+        # Narrow in SQL with a text prefilter on the JSON column (portable across SQLite and
+        # PostgreSQL) so only projects that mention the ID are loaded; the exact membership
+        # check below stays authoritative.
+        rows = (
+            await session.execute(
+                select(Folder).where(
+                    Folder.kind == 'project',
+                    cast(Folder.data, String).contains(file_id, autoescape=True),
+                )
+            )
+        ).scalars()
+        for project in rows:
+            files = (project.data or {}).get('files') or []
+            if any(isinstance(f, dict) and f.get('type') == 'file' and f.get('id') == file_id for f in files):
+                if await has_folder_access(user.id, FolderModel.model_validate(project), 'read', session):
+                    return True
+    return False
 
 
 async def get_accessible_folder_files(
@@ -227,6 +256,9 @@ async def get_owner_accessible_folder_files(folder: FolderModel, db: AsyncSessio
     files = (folder.data or {}).get('files') or []
     if not files:
         return []
+    if folder.kind == 'project':
+        # Publication is explicit and validated at the project write endpoint.
+        return [entry for entry in files if entry.get('type') == 'file' and await Files.get_file_by_id(entry.get('id'), db=db)]
 
     owner = await Users.get_user_by_id(folder.user_id, db=db)
     if not owner:

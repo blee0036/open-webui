@@ -1,7 +1,18 @@
 import { OPENAI_API_BASE_URL, WEBUI_API_BASE_URL, WEBUI_BASE_URL } from '$lib/constants';
+import i18next from 'i18next';
 
 export const getErrorMessage = (err: any, fallback = 'Server connection failed') => {
 	if (Array.isArray(err)) return fallback;
+	const detail = err?.detail ?? err?.error ?? err;
+	if (detail?.code === 'quota_exhausted') {
+		return detail.reset_at
+			? i18next.t('Quota exhausted. Resets at {{time}}.', {
+					time: new Date(detail.reset_at * 1000).toLocaleString()
+				})
+			: i18next.t('Quota exhausted. This package does not reset; contact an administrator.');
+	}
+	if (detail?.code === 'model_price_missing')
+		return i18next.t('This model has no configured price. Ask an administrator to set its price.');
 	return (
 		[
 			err?.detail?.error?.message,

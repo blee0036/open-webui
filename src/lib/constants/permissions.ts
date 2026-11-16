@@ -63,6 +63,7 @@ export const DEFAULT_PERMISSIONS = {
 	},
 	features: {
 		api_keys: false,
+		playground: false,
 		notes: true,
 		channels: true,
 		encrypted_channels: false,

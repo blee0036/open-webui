@@ -6,7 +6,7 @@
 
 	import { WEBUI_BASE_URL } from '$lib/constants';
 	import { baseModels, WEBUI_NAME, config, user, models, settings, showSidebar } from '$lib/stores';
-	import { chatCompletion } from '$lib/apis/openai';
+	import { chatCompletion, getErrorMessage } from '$lib/apis/openai';
 
 	import { splitStream, resolveDefaultModelIds } from '$lib/utils';
 	import Spinner from '$lib/components/common/Spinner.svelte';
@@ -20,6 +20,7 @@
 
 	let loading = false;
 	let stopResponseFlag = false;
+	let requestError = '';
 
 	let textCompletionAreaElement: HTMLTextAreaElement;
 
@@ -53,6 +54,9 @@
 			},
 			`${WEBUI_BASE_URL}/api`
 		);
+		if (!res?.ok) {
+			throw (await res?.json().catch(() => null)) ?? new Error($i18n.t('Server connection failed'));
+		}
 
 		if (res && res.ok) {
 			const reader = res.body
@@ -80,7 +84,12 @@
 								let data = JSON.parse(line.replace(/^data: /, ''));
 								console.log(data);
 
-								text += data.choices[0].delta.content ?? '';
+								if (data.error) {
+									requestError = getErrorMessage(data);
+									stopResponseFlag = true;
+									break;
+								}
+								text += data.choices?.[0]?.delta?.content ?? '';
 							}
 						}
 					}
@@ -96,15 +105,20 @@
 	const submitHandler = async () => {
 		if (selectedModelId) {
 			loading = true;
-			await textCompletionHandler();
-
-			loading = false;
-			stopResponseFlag = false;
+			requestError = '';
+			try {
+				await textCompletionHandler();
+			} catch (error) {
+				requestError = getErrorMessage(error, $i18n.t('Server connection failed'));
+			} finally {
+				loading = false;
+				stopResponseFlag = false;
+			}
 		}
 	};
 
 	onMount(async () => {
-		if ($user?.role !== 'admin') {
+		if ($user?.role !== 'admin' && !$user?.permissions?.features?.playground) {
 			await goto('/');
 		}
 
@@ -121,6 +135,14 @@
 <div class=" flex flex-col justify-between w-full overflow-y-auto h-full">
 	<div class="mx-auto w-full md:px-0 h-full">
 		<div class=" flex flex-col h-full px-2.5">
+			{#if requestError}
+				<p
+					role="alert"
+					class="mb-3 rounded-xl bg-amber-50 p-3 text-sm text-amber-900 dark:bg-amber-950 dark:text-amber-200"
+				>
+					{requestError}
+				</p>
+			{/if}
 			<div
 				class=" pt-0.5 pb-2.5 flex flex-col justify-between w-full flex-auto overflow-auto h-0"
 				id="messages-container"

@@ -255,6 +255,7 @@ class ChatPermissions(BaseModel):
 
 class FeaturesPermissions(BaseModel):
     api_keys: bool = False
+    playground: bool = False
     notes: bool = True
     channels: bool = True
     encrypted_channels: bool = False
@@ -492,6 +493,9 @@ async def update_user_settings_by_session_user(
     ui_settings = updated_user_settings.get('ui')
 
     if isinstance(ui_settings, dict):
+        if user.role != 'admin' and await Config.get('team.enabled', False):
+            if ui_settings.get('directConnections'):
+                raise HTTPException(403, 'Personal model connections are disabled')
         if user.role != 'admin' and not await has_permission(
             user.id, 'settings.interface', await Config.get('user.permissions'), db=db
         ):

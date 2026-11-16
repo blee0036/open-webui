@@ -1104,6 +1104,8 @@ async def chat_completion_tools_handler(
                         {**metadata, 'tools': tools},
                         event_caller,
                         {'name': tool_function_name, 'arguments': tool_function_params, 'call_id': str(uuid4())},
+                        request=request,
+                        user=user,
                     )
 
                 except Exception as e:
@@ -2016,6 +2018,8 @@ def sanitize_tool_pairs(messages: list[dict]) -> list[dict]:
 
 
 async def process_chat_payload(request, form_data, user, metadata, model):
+    # Derived only from an authorized saved chat/folder, never accepted from clients.
+    metadata.pop('project_id', None)
     # Ensure chat_id is always a string — external API clients may omit it.
     if not isinstance(metadata.get('chat_id'), str):
         metadata['chat_id'] = ''
@@ -2260,8 +2264,11 @@ async def process_chat_payload(request, form_data, user, metadata, model):
 
     if folder_id and user:
         folder = await Folders.get_folder_by_id(folder_id)
-        if folder and user.role != 'admin' and not await has_folder_access(user.id, folder, 'read', db=None):
+        if folder and (folder.kind == 'project' or user.role != 'admin') and not await has_folder_access(user.id, folder, 'read', db=None):
             folder = None
+
+        if folder and folder.kind == 'project':
+            metadata['project_id'] = folder.id
 
         if folder and folder.data:
             if 'system_prompt' in folder.data:
@@ -2279,7 +2286,7 @@ async def process_chat_payload(request, form_data, user, metadata, model):
 
     # Model "Knowledge" handling
     user_message = get_last_user_message(form_data['messages'])
-    model_knowledge = model.get('info', {}).get('meta', {}).get('knowledge', False)
+    model_knowledge = model.get('info', {}).get('meta', {}).get('knowledge', False) if not metadata.get('project_id') else []
 
     if model_knowledge and metadata.get('params', {}).get('function_calling') == 'legacy':
         await event_emitter(
@@ -2343,6 +2350,9 @@ async def process_chat_payload(request, form_data, user, metadata, model):
 
     initial_output = []
     features = form_data.pop('features', None) or {}
+    if metadata.get('project_id'):
+        features['memory'] = False
+        metadata.setdefault('features', {})['memory'] = False
     extra_params['__features__'] = features
     if features:
         if 'voice' in features and features['voice']:
@@ -3168,7 +3178,7 @@ async def build_chat_response_context(request, form_data, user, model, metadata,
     }
 
 
-async def execute_tool_call(form_data, metadata, event_caller, tool_call, history=None):
+async def execute_tool_call(form_data, metadata, event_caller, tool_call, history=None, *, request=None, user=None):
     """Execute a resolved call; resumed approvals use the same validation and loop policy."""
     name = tool_call.get('name', '')
     tool = metadata.get('tools', {}).get(name)
@@ -3203,7 +3213,9 @@ async def execute_tool_call(form_data, metadata, event_caller, tool_call, histor
     if tool_type != 'mcp':
         allowed_params = tool.get('spec', {}).get('parameters', {}).get('properties', {})
         params = {key: value for key, value in params.items() if key in allowed_params}
-    requires_approval = await requires_tool_approval(form_data, metadata, tool_call, tool, params)
+    requires_approval = await requires_tool_approval(
+        form_data, metadata, tool_call, tool, params, request=request, user=user
+    )
     if (
         requires_approval
         and is_saved_chat_id(metadata.get('chat_id'))
@@ -3349,7 +3361,7 @@ async def resume_tool_calls(request, form_data, user, model, metadata, message) 
             history = [call for call in output if call.get('type') == 'function_call']
             history = history[: next(i for i, call in enumerate(history) if call.get('call_id') == item['call_id'])]
             params, result, tool, tool_type, direct_tool = await execute_tool_call(
-                form_data, metadata, event_caller, item, history
+                form_data, metadata, event_caller, item, history, request=request, user=user
             )
             files, embeds = [], []
             if result is None and tool is None:
@@ -5983,14 +5995,18 @@ async def streaming_chat_response_handler(response, ctx):
                         for tool_call in response_tool_calls:
                             if tool_call.get('name') != 'delegate_task':
                                 tool_results[tool_call['call_id']] = await execute_tool_call(
-                                    form_data, metadata, event_caller, tool_call, tool_history
+                                    form_data, metadata, event_caller, tool_call, tool_history,
+                                    request=request, user=user,
                                 )
                         tool_results.update(
                             zip(
                                 [tool_call['call_id'] for tool_call in delegate_calls],
                                 await asyncio.gather(
                                     *(
-                                        execute_tool_call(form_data, metadata, event_caller, tool_call, tool_history)
+                                        execute_tool_call(
+                                            form_data, metadata, event_caller, tool_call, tool_history,
+                                            request=request, user=user,
+                                        )
                                         for tool_call in delegate_calls
                                     )
                                 ),
@@ -6003,7 +6019,8 @@ async def streaming_chat_response_handler(response, ctx):
                         if tool_approval_mode == 'auto':
                             try:
                                 tool_results[tool_call_id] = await execute_tool_call(
-                                    form_data, metadata, event_caller, tool_call, tool_history
+                                    form_data, metadata, event_caller, tool_call, tool_history,
+                                    request=request, user=user,
                                 )
                             except ToolApprovalRequired:
                                 break

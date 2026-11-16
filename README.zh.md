@@ -2,6 +2,8 @@
 
 <p>Open WebUI 是 <a href="https://docs.openwebui.com/"><strong>AI 的家</strong></a>：一个可扩展、易于使用的自托管平台，支持完全离线运行。通过 Ollama 连接本地模型，或使用兼容 OpenAI 的 API 连接本地和云端模型。</p>
 
+> **部署本仓库的团队改造版，请从[零基础部署指南](docs/DEPLOY_GUIDE.md)开始。** 使用本仓库的 Compose 配置，按步骤完成多企业登录、套餐额度和持久 Agent 工作区；下方通用 Python 包和官方镜像安装不包含这些改造。
+
 [English](README.md) |
 [简体中文](README.zh.md) |
 [繁體中文](README.zht.md) |

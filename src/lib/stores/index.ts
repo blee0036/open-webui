@@ -77,7 +77,8 @@ export const pinnedNotes = writable([]);
 export const tags = writable([]);
 export const folders = writable([]);
 
-export const selectedFolder = writable(null);
+export const selectedFolder = writable<any>(null);
+export const activeProjectId = writable<string | null>(null);
 
 export const models: Writable<Model[]> = writable([]);
 
@@ -345,6 +346,7 @@ type Settings = {
 	renderMarkdownInAssistantMessages?: boolean;
 	recentEmojis?: string[];
 	pinnedMenuItems?: string[];
+	terminalServers?: any[];
 	pinnedNotesOrder?: string[];
 
 	defaultUploadContext?: 'full' | 'focused';
@@ -417,6 +419,8 @@ type Config = {
 	default_prompt_suggestions: PromptSuggestion[] | null;
 	default_prompt_suggestions_i18n?: Record<string, { suggestion_prompts: PromptSuggestion[] }>;
 	features: {
+		enable_team_workspaces?: boolean;
+		enable_quota?: boolean;
 		enable_encrypted_channels?: boolean;
 		slim?: boolean;
 		auth: boolean;

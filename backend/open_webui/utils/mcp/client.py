@@ -30,7 +30,7 @@ from referencing import Registry
 log = logging.getLogger(__name__)
 
 
-def create_httpx_client(headers=None, auth=None):
+def create_httpx_client(headers=None, auth=None, restricted=False):
     """Create the httpx2 AsyncClient that carries MCP traffic.
 
     Note: verify must be passed at construction time because httpx2
@@ -41,12 +41,17 @@ def create_httpx_client(headers=None, auth=None):
     Redirects are not configured here: the MCP SDK follows same-origin
     redirects itself and ignores the client's follow_redirects setting.
     """
+    options = {}
+    if restricted:
+        from open_webui.utils.team_network import member_http_transport
+        options = {'transport': member_http_transport(verify=AIOHTTP_CLIENT_SESSION_TOOL_SERVER_SSL), 'trust_env': False}
     return httpx2.AsyncClient(
         headers=headers,
         auth=auth,
         verify=AIOHTTP_CLIENT_SESSION_TOOL_SERVER_SSL,
         # The SDK's transport defaults: reads stay open for long-lived SSE streams.
         timeout=httpx2.Timeout(30, read=300),
+        **options,
     )
 
 
@@ -74,7 +79,8 @@ class OAuthTokenAuth(httpx2.Auth):
 
 
 class MCPClient:
-    def __init__(self, event_caller=None, server_name=''):
+    def __init__(self, event_caller=None, server_name='', restricted=False):
+        self.restricted = restricted
         self.client: Optional[Client] = None
         self.session_task: Optional[asyncio.Task] = None
         self.event_caller = event_caller
@@ -131,7 +137,7 @@ class MCPClient:
         self, url: str, headers: Optional[dict], auth: Optional[httpx2.Auth], connected: asyncio.Future
     ) -> None:
         try:
-            async with create_httpx_client(headers=headers, auth=auth) as http_client:
+            async with create_httpx_client(headers=headers, auth=auth, restricted=self.restricted) as http_client:
                 # mode='auto' (the default) probes server/discover for the stateless
                 # 2026-07-28 protocol and falls back to the initialize handshake on
                 # legacy servers. The read timeout bounds that handshake and every

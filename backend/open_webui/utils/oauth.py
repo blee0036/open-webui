@@ -14,6 +14,7 @@ from types import SimpleNamespace
 from typing import Literal, Optional
 
 import aiohttp
+from open_webui.utils.team_network import oauth_http_session, member_http_transport
 import jwt
 from authlib.integrations.starlette_client import OAuth
 from authlib.oauth2.rfc6749.errors import OAuth2Error
@@ -438,7 +439,7 @@ async def get_protected_resource_metadata(server_url: str) -> ProtectedResourceM
     resource = None
     scopes = []
     try:
-        async with aiohttp.ClientSession(trust_env=True) as session:
+        async with oauth_http_session() as session:
             async with session.post(
                 server_url,
                 json={'jsonrpc': '2.0', 'method': 'initialize', 'params': {}, 'id': 1},
@@ -538,7 +539,7 @@ async def get_discovery_urls(server_url) -> list[str]:
 async def _get_oauth_server_metadata(
     server_url: str, resource_metadata: ProtectedResourceMetadata
 ) -> tuple[OAuthMetadata, str | None]:
-    async with aiohttp.ClientSession(trust_env=True) as session:
+    async with oauth_http_session() as session:
         for url in resource_metadata.get_discovery_urls(server_url):
             async with session.get(url, ssl=AIOHTTP_CLIENT_SESSION_SSL) as response:
                 if response.status != 200:
@@ -626,7 +627,7 @@ async def get_oauth_client_info_with_dynamic_client_registration(
         )
 
         # Perform dynamic client registration and return client info
-        async with aiohttp.ClientSession(trust_env=True) as session:
+        async with oauth_http_session() as session:
             async with session.post(
                 registration_url, json=registration_data, ssl=AIOHTTP_CLIENT_SESSION_SSL
             ) as oauth_client_registration_response:
@@ -878,6 +879,8 @@ class OAuthClientManager:
             },
             'server_metadata_url': (oauth_client_info.issuer if oauth_client_info.issuer else None),
         }
+        if client_id.startswith('mcp:personal-'):
+            kwargs['client_kwargs'].update(transport=member_http_transport(version=1), trust_env=False)
 
         # Defense-in-depth: when the server metadata is already known, pass the
         # authorization/token endpoints explicitly so authlib does not rely solely
@@ -918,6 +921,14 @@ class OAuthClientManager:
         """
         if not ENABLE_TOOL_SERVERS:
             raise HTTPException(status_code=403, detail='Tool servers are disabled')
+
+        if client_id.startswith('mcp:personal-'):
+            from open_webui.utils.personal_connections import verify_personal_oauth
+            connection = await verify_personal_oauth(client_id)
+            if client_id in self.clients:
+                return self.clients[client_id]['client']
+            info = resolve_oauth_client_info(connection)
+            return self.add_client(client_id, OAuthClientInformationFull(**info))['client'] if info else None
 
         if client_id in self.clients:
             return self.clients[client_id]['client']
@@ -1005,7 +1016,9 @@ class OAuthClientManager:
             return True
 
         try:
-            async with aiohttp.ClientSession(trust_env=True) as session:
+            async with oauth_http_session(restricted=client_info is not None and any(
+                'mcp:personal-' in str(uri) for uri in (client_info.redirect_uris or [])
+            )) as session:
                 async with session.get(
                     authorization_url,
                     allow_redirects=AIOHTTP_CLIENT_ALLOW_REDIRECTS,
@@ -1061,7 +1074,7 @@ class OAuthClientManager:
         if not ENABLE_TOOL_SERVERS:
             raise HTTPException(status_code=403, detail='Tool servers are disabled')
 
-        if client_id not in self.clients:
+        if client_id.startswith('mcp:personal-') or client_id not in self.clients:
             await self.ensure_client_from_config(client_id)
 
         client = self.clients.get(client_id)
@@ -1071,7 +1084,7 @@ class OAuthClientManager:
         if not ENABLE_TOOL_SERVERS:
             raise HTTPException(status_code=403, detail='Tool servers are disabled')
 
-        if client_id not in self.clients:
+        if client_id.startswith('mcp:personal-') or client_id not in self.clients:
             await self.ensure_client_from_config(client_id)
 
         client = self.clients.get(client_id)
@@ -1097,6 +1110,8 @@ class OAuthClientManager:
             dict: OAuth token data with access_token, or None if no valid token available
         """
         try:
+            from open_webui.utils.personal_connections import verify_personal_oauth
+            await verify_personal_oauth(client_id, user_id)
             # Get the OAuth session
             session = await OAuthSessions.get_session_by_provider_and_user_id(client_id, user_id)
             if not session:
@@ -1214,7 +1229,7 @@ class OAuthClientManager:
                 refresh_data['scope'] = client.client_kwargs['scope']
 
             # Make refresh request
-            async with aiohttp.ClientSession(trust_env=True) as session_http:
+            async with oauth_http_session(restricted=client_id.startswith('mcp:personal-')) as session_http:
                 async with session_http.post(
                     token_endpoint,
                     data=refresh_data,
@@ -1246,6 +1261,8 @@ class OAuthClientManager:
             return None
 
     async def handle_authorize(self, request, client_id: str, user_id: str) -> RedirectResponse:
+        from open_webui.utils.personal_connections import verify_personal_oauth
+        await verify_personal_oauth(client_id, user_id)
         client = await self.get_client(client_id)
         if client is None:
             raise HTTPException(404)
@@ -1304,6 +1321,8 @@ class OAuthClientManager:
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail='OAuth callback state is invalid or expired',
                 )
+            from open_webui.utils.personal_connections import verify_personal_oauth
+            await verify_personal_oauth(client_id, user_id)
 
             if not await get_verified_user_by_id(user_id):
                 raise HTTPException(
@@ -1336,6 +1355,7 @@ class OAuthClientManager:
                 token = None
 
             if token:
+                await verify_personal_oauth(client_id, user_id)
                 try:
                     _normalize_token_expiry(token)
 

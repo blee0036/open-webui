@@ -45,6 +45,7 @@ from open_webui.utils.plugin import (
     get_function_module_from_cache,
     load_function_module_by_id,
 )
+from open_webui.utils.quota_transport import plugin_model_request
 
 logging.basicConfig(stream=sys.stdout, level=GLOBAL_LOG_LEVEL)
 log = logging.getLogger(__name__)
@@ -258,6 +259,7 @@ async def generate_function_chat_completion(request, form_data, user, models: di
         '__metadata__': metadata,
         '__oauth_token__': oauth_token,
         '__request__': request,
+        '__model_request__': plugin_model_request(request, user),
     }
     extra_params['__tools__'] = metadata.get('tools', {})
 

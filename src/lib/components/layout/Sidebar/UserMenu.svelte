@@ -63,7 +63,9 @@
 
 	const DEFAULT_PINNED_ITEMS = ['notes', 'workspace'];
 
-	$: pinnedItems = $settings?.pinnedMenuItems ?? DEFAULT_PINNED_ITEMS;
+	$: pinnedItems =
+		$settings?.pinnedMenuItems ??
+		($config?.features?.enable_team_workspaces ? ['projects'] : DEFAULT_PINNED_ITEMS);
 
 	const isPinned = (id: string) => {
 		return pinnedItems.includes(id);
@@ -259,6 +261,44 @@
 				<hr class="border-gray-50/30 dark:border-gray-800/30 my-0.5 mx-1 p-0" />
 			{/if}
 
+			{#if $config?.features?.enable_team_workspaces}
+				{#each [{ id: 'projects', label: 'Projects', href: '/projects' }, { id: 'environment', label: 'Work environment', href: '/environment' }] as item}
+					<div class="flex items-center rounded-xl hover:bg-gray-50/60 dark:hover:bg-gray-800/60">
+						<a
+							role="menuitem"
+							href={item.href}
+							class="flex min-w-0 flex-1 items-center gap-2 rounded-xl px-2 py-2 text-[0.8125rem]"
+							on:click={() => {
+								show = false;
+								if ($mobile) showSidebar.set(false);
+							}}
+						>
+							<WorkspaceIcon className="size-3.5" /><span class="truncate"
+								>{$i18n.t(item.label)}</span
+							>
+						</a>
+						{#if shiftKey}<button
+								type="button"
+								class="p-2"
+								aria-label={$i18n.t(isPinned(item.id) ? 'Unpin from Sidebar' : 'Pin to Sidebar')}
+								on:click={() => togglePin(item.id)}
+								>{#if isPinned(item.id)}<PinSlashIcon className="size-3.5" />{:else}<PinIcon
+										className="size-3.5"
+									/>{/if}</button
+							>{/if}
+					</div>
+				{/each}
+			{/if}
+			{#if $config?.features?.enable_quota}<a
+					role="menuitem"
+					href="/quota"
+					class="flex items-center gap-2 rounded-xl px-2 py-2 text-[0.8125rem] hover:bg-gray-50/60 dark:hover:bg-gray-800/60"
+					on:click={() => {
+						show = false;
+						if ($mobile) showSidebar.set(false);
+					}}><ClockIcon className="size-3.5" />{$i18n.t('My quota')}</a
+				>{/if}
+
 			{#if $user?.role === 'admin' || $user?.permissions?.workspace?.models || $user?.permissions?.workspace?.knowledge || $user?.permissions?.workspace?.prompts || $user?.permissions?.workspace?.tools || $user?.permissions?.workspace?.skills}
 				<div
 					class="user-menu-row flex items-center w-full rounded-xl hover:bg-gray-50/60 dark:hover:bg-gray-800/60 transition-colors"
@@ -282,7 +322,9 @@
 						<div class="self-center">
 							<WorkspaceIcon className="size-3.5" strokeWidth="1.5" />
 						</div>
-						<div class="self-center truncate">{$i18n.t('Workspace')}</div>
+						<div class="self-center truncate">
+							{$i18n.t($config?.features?.enable_team_workspaces ? 'Resource center' : 'Workspace')}
+						</div>
 					</a>
 					{#if shiftKey}
 						<Tooltip
@@ -463,7 +505,7 @@
 				</div>
 			{/if}
 
-			{#if role === 'admin'}
+			{#if role === 'admin' || $user?.permissions?.features?.playground}
 				<div
 					class="user-menu-row flex items-center w-full rounded-xl hover:bg-gray-50/60 dark:hover:bg-gray-800/60 transition-colors"
 				>

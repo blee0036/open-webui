@@ -205,10 +205,18 @@ def replace_imports(content):
 
 # Let the care put into this work survive every
 # import and transformation, and serve those who carry it forward.
-async def load_tool_module_by_id(tool_id, content=None):
+async def load_tool_module_by_id(tool_id, content=None, *, sandbox_user_id=None):
     """Prepare a Tool instance, frontmatter, and Python module without changing the live cache."""
     if not ENABLE_TOOLS:
         raise RuntimeError('Tools are disabled by ENABLE_PLUGINS or ENABLE_TOOLS')
+
+    from open_webui.utils.sandboxes import SandboxTool, requires_sandbox, sandbox_tool_descriptor
+    stored = await Tools.get_tool_by_id(tool_id)
+    if sandbox_user_id or (stored and await requires_sandbox(stored)):
+        if stored and (content is None or content == stored.content) and getattr(stored.meta, 'sandbox_schema', None):
+            return SandboxTool(stored.meta.sandbox_schema), {'runtime': 'sandbox'}, None
+        return await sandbox_tool_descriptor(tool_id, content if content is not None else stored.content,
+                                             sandbox_user_id or stored.user_id)
 
     frontmatter = None
     if content is None:
@@ -217,6 +225,7 @@ async def load_tool_module_by_id(tool_id, content=None):
             raise Exception(f'Toolkit not found: {tool_id}')
 
         content = tool.content
+
     else:
         frontmatter = extract_frontmatter(content)
         # Install required packages found within the frontmatter.
@@ -336,8 +345,9 @@ def set_tool_module_in_cache(request, tool_id, content, tool_module, source_modu
     previous = sys.modules.get(f'tool_{tool_id}')
     if previous is not None:
         sys.modules.pop(previous.__name__, None)
-    sys.modules[source_module.__name__] = source_module
-    sys.modules[f'tool_{tool_id}'] = source_module
+    if source_module is not None:
+        sys.modules[source_module.__name__] = source_module
+        sys.modules[f'tool_{tool_id}'] = source_module
     get_tools_cache(request)[tool_id] = tool_module
     get_tool_contents_cache(request)[tool_id] = content
 
@@ -360,12 +370,22 @@ async def get_tool_module_from_cache(request, tool_id, load_from_db=True):
     tool_contents_cache = get_tool_contents_cache(request)
     content = None
 
-    if load_from_db:
+    from open_webui.models.config import Config
+    if load_from_db or await Config.get('team.enabled', False):
         # Always load from the database by default
         tool = await Tools.get_tool_by_id(tool_id)
         if not tool:
             raise Exception(f'Tool not found: {tool_id}')
         content = tool.content
+
+        from open_webui.utils.sandboxes import SandboxTool, requires_sandbox
+        if await requires_sandbox(tool):
+            cached = tools_cache.get(tool_id)
+            if isinstance(cached, SandboxTool) and tool_contents_cache.get(tool_id) == content:
+                return cached, None
+            module, frontmatter, source = await load_tool_module_by_id(tool_id, content)
+            set_tool_module_in_cache(request, tool_id, content, module, source)
+            return module, frontmatter
 
         if tool_id in tool_contents_cache and tool_id in tools_cache:
             if tool_contents_cache[tool_id] == content:

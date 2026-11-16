@@ -424,6 +424,8 @@ async def review_memory_after_turn(
     if not model_allows_memory(model):
         return
 
+    if metadata.get('project_id'):
+        return
     features = metadata.get('features') or {}
     if not features.get('memory'):
         return

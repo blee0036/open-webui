@@ -7,7 +7,7 @@ import logging
 from urllib.parse import urlencode, urlsplit, urlunsplit
 
 import aiohttp
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials
 from open_webui.config import BYPASS_ADMIN_ACCESS_CONTROL, DEFAULT_REALTIME_CALL_PROMPT_TEMPLATE
 from open_webui.env import AIOHTTP_CLIENT_SESSION_SSL, BYPASS_MODEL_ACCESS_CONTROL, ENABLE_FORWARD_USER_INFO_HEADERS
@@ -19,6 +19,8 @@ from open_webui.utils.auth import get_verified_user_by_token
 from open_webui.utils.headers import get_microsoft_entra_id_access_token, include_user_info_headers
 from open_webui.utils.json_codec import JSONCodec
 from open_webui.utils.models import check_model_access, get_all_models
+from open_webui.utils.quota_transport import RealtimeMeter
+from open_webui.utils.realtime_transcription import RealtimeAudioSegments, transcribe_segment
 from open_webui.utils.session_pool import get_session
 from open_webui.utils.voice_avatar import avatar_animation_tools
 
@@ -363,6 +365,7 @@ async def realtime_call(ws: WebSocket):
     upstream = None
     tasks = []
     user = None
+    meter = None
     try:
         async with asyncio.timeout(10):
             raw = await ws.receive_text()
@@ -387,6 +390,7 @@ async def realtime_call(ws: WebSocket):
             'audio.realtime.transcription_model',
             'audio.realtime.input_params',
             'audio.realtime.prompt_template',
+            'team.quota.enabled',
             'user.permissions',
         )
         if not config.get('audio.realtime.enabled'):
@@ -442,6 +446,9 @@ async def realtime_call(ws: WebSocket):
         )
         override = ModelVoice.model_validate((model_info.meta.model_dump().get('voice') if model_info else None) or {})
         voice_model = config.get('audio.realtime.model')
+        meter = RealtimeMeter(user, voice_model)
+        segments = RealtimeAudioSegments() if config.get('team.quota.enabled') else None
+        transcription_queue = asyncio.Queue(maxsize=16)
         voice = override.voice or config.get('audio.realtime.voice')
         if not voice_model or not voice or not config.get('audio.realtime.transcription_model'):
             raise ValueError('Configure the Realtime model, voice, and transcription model')
@@ -484,8 +491,9 @@ async def realtime_call(ws: WebSocket):
                         ),
                         'audio': {
                             'input': {
+                                **(config.get('audio.realtime.input_params') or {}),
                                 'format': {'type': 'audio/pcm', 'rate': 24000},
-                                'transcription': {'model': config['audio.realtime.transcription_model']},
+                                'transcription': None if segments else {'model': config['audio.realtime.transcription_model']},
                                 # Wait for the finalized transcript before requesting a response. This gives
                                 # every function call an unambiguous input_item_id, even during barge-in.
                                 'turn_detection': {
@@ -494,7 +502,6 @@ async def realtime_call(ws: WebSocket):
                                     'interrupt_response': False,
                                     'create_response': False,
                                 },
-                                **(config.get('audio.realtime.input_params') or {}),
                             },
                             'output': {'format': {'type': 'audio/pcm', 'rate': 24000}, 'voice': voice},
                         },
@@ -529,8 +536,23 @@ async def realtime_call(ws: WebSocket):
                 if event['type'] == 'bridge.result':
                     protocol.requested.add(f'result:{event["call_id"]}')
                 for item in command if isinstance(command, list) else [command]:
+                    if segments is not None:
+                        segments.command(item)
                     async with asyncio.timeout(5):
-                        await upstream.send_json(item)
+                        await meter.send(upstream, item)
+
+        async def transcription_events():
+            while True:
+                item_id, pcm = await transcription_queue.get()
+                async with asyncio.timeout(120):
+                    transcript = await transcribe_segment(ws, user, config, headers, pcm)
+                event = {'type': 'conversation.item.input_audio_transcription.completed',
+                         'item_id': item_id, 'content_index': 0, 'transcript': transcript}
+                command = protocol.observe(event)
+                if command:
+                    await meter.send(upstream, command)
+                await ws.send_json(event)
+                transcription_queue.task_done()
 
         async def provider_events():
             async for message in upstream:
@@ -539,6 +561,14 @@ async def realtime_call(ws: WebSocket):
                 event = message.json()
                 if not isinstance(event, dict):
                     raise ValueError('Invalid provider event')
+                await meter.observe(event)
+                if segments is not None:
+                    committed = segments.observe(event)
+                    if committed:
+                        try:
+                            transcription_queue.put_nowait(committed)
+                        except asyncio.QueueFull:
+                            raise ValueError('Too many voice segments are waiting for transcription') from None
                 kind = event.get('type', '')
                 if kind == 'error' and event.get('error', {}).get('code') == 'response_cancel_not_active':
                     continue  # Server VAD may finish cancellation before our explicit cancel arrives.
@@ -549,7 +579,7 @@ async def realtime_call(ws: WebSocket):
                 if command:
                     # Clean up before the client can request another response.
                     async with asyncio.timeout(5):
-                        await upstream.send_json(command)
+                        await meter.send(upstream, command)
                 if kind.startswith(('response.', 'conversation.item.', 'input_audio_buffer.')):
                     async with asyncio.timeout(5):
                         await ws.send_json(event)
@@ -569,6 +599,8 @@ async def realtime_call(ws: WebSocket):
             raise ValueError('Call session expired. Start a new call.')
 
         tasks = [asyncio.create_task(fn()) for fn in (client_events, provider_events, check_auth)]
+        if segments is not None:
+            tasks.append(asyncio.create_task(transcription_events()))
         done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
         for task in done:
             task.result()
@@ -579,7 +611,9 @@ async def realtime_call(ws: WebSocket):
     except Exception as exc:
         # Only our own validation errors are safe to show. Never stringify provider exceptions.
         detail = (
-            str(exc)
+            (exc.detail.get('message', str(exc.detail)) if isinstance(exc.detail, dict) else str(exc.detail))
+            if isinstance(exc, HTTPException)
+            else str(exc)
             if type(exc) is ValueError
             # A send can still fail on the provider connection that just closed.
             else 'Voice provider connection closed'
@@ -593,6 +627,8 @@ async def realtime_call(ws: WebSocket):
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+        if meter is not None:
+            await asyncio.shield(meter.close())
         if upstream is not None:
             await upstream.close()
         with contextlib.suppress(Exception):

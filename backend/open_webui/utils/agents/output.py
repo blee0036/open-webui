@@ -153,6 +153,7 @@ class Output:
                 },
             },
             arguments,
+            user=self.user,
         ):
             resolution = {'action': 'approve'}
         self.items.append(item)

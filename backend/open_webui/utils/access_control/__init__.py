@@ -64,6 +64,10 @@ async def get_permissions(
     for group in user_groups:
         permissions = combine_permissions(permissions, group.permissions or {})
 
+    from open_webui.models.config import Config
+    if await Config.get('team.enabled', False):
+        permissions.setdefault('features', {})['api_keys'] = False
+
     return permissions
 
 
@@ -79,6 +83,11 @@ async def has_permission(
 
     Permission keys can be hierarchical and separated by dots ('.').
     """
+
+    if permission_key == 'features.api_keys':
+        from open_webui.models.config import Config
+        if await Config.get('team.enabled', False):
+            return False
 
     def get_permission(permissions: dict[str, Any], keys: list[str]) -> bool:
         """Traverse permissions dict using a list of keys (from dot-split permission_key)."""

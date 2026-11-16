@@ -198,6 +198,7 @@ class Chat(Base):  # database table mapping for chat entity
     meta = Column(JSON, server_default='{}')
     variables = Column(JSON, nullable=True)
     folder_id = Column(Text, nullable=True)
+    visibility = Column(Text, nullable=False, default='private', server_default='private')
 
     tasks = Column(JSON, nullable=True)
     summary = Column(Text, nullable=True)
@@ -254,6 +255,7 @@ class ChatModel(BaseModel):
     meta: dict = {}
     variables: dict = {}
     folder_id: str | None = None
+    visibility: str = 'private'
 
     tasks: list | None = None
     summary: str | None = None
@@ -350,6 +352,8 @@ class ChatResponse(BaseModel):
 
 
 class ChatTitleIdResponse(BaseModel):
+    user_id: str | None = None
+    visibility: str = 'private'
     id: str
     title: str
     updated_at: int
@@ -2027,7 +2031,7 @@ class ChatTable:
             return False
         if chat is None:
             async with get_async_db_context(db) as session:
-                result = await session.execute(select(Chat.user_id, Chat.meta, Chat.folder_id).filter_by(id=id))
+                result = await session.execute(select(Chat.user_id, Chat.meta, Chat.folder_id, Chat.visibility).filter_by(id=id))
                 chat = result.first()
         if not chat:
             return False
@@ -2055,6 +2059,7 @@ class ChatTable:
             folder = await Folders.get_folder_by_id(chat.folder_id, db=db)
             if (
                 folder
+                and (folder.kind != 'project' or (permission == 'read' and getattr(chat, 'visibility', 'private') == 'project'))
                 and (permission == 'read' or (folder.data or {}).get('share_mode') == 'continue')
                 and await has_folder_access(user.id, folder, 'read', db)
             ):
@@ -2253,13 +2258,14 @@ class ChatTable:
         skip: int = 0,
         limit: int = 60,
         db: AsyncSession | None = None,
+        project_id: str | None = None,
     ) -> list[ChatTitleIdResponse]:
         """
         Search chats without loading their bodies, with pagination applied in SQL.
         """
         search_text = sanitize_text_for_db(search_text).lower().strip()
 
-        if not search_text:
+        if not search_text and not project_id:
             return await self.get_chat_list_by_user_id(
                 user_id, include_archived, filter={}, skip=skip, limit=limit, db=db
             )
@@ -2302,8 +2308,17 @@ class ChatTable:
 
         async with get_async_db_context(db) as session:
             stmt = select(
-                Chat.id, Chat.title, Chat.updated_at, Chat.created_at, Chat.last_read_at, Chat.archived
-            ).filter(Chat.user_id == user_id)
+                Chat.id, Chat.title, Chat.updated_at, Chat.created_at, Chat.last_read_at, Chat.archived,
+                Chat.user_id, Chat.visibility
+            )
+            if project_id:
+                from open_webui.utils.access_control.folders import has_folder_access
+                folder = await Folders.get_folder_by_id(project_id, db=session)
+                if not folder or folder.kind != 'project' or not await has_folder_access(user_id, folder, 'read', session):
+                    return []
+                stmt = stmt.where(Chat.folder_id == project_id, or_(Chat.user_id == user_id, Chat.visibility == 'project'))
+            else:
+                stmt = stmt.where(Chat.user_id == user_id)
             stmt = stmt.where(Chat.meta['internal'].as_boolean().is_not(True))
 
             if is_archived is not None:
@@ -2439,12 +2454,21 @@ class ChatTable:
             return [ChatTitleIdResponse.model_validate(chat) for chat in all_chats]
 
     async def get_chat_search_snippets(
-        self, ids: list[str], user_id: str, search_text: str, db: AsyncSession | None = None
+        self, ids: list[str], user_id: str, search_text: str, db: AsyncSession | None = None, project_id: str | None = None
     ) -> dict[str, str | None]:
         if not ids or not chat_search_content_query(search_text):
             return {}
         async with get_async_db_context(db) as session:
-            result = await session.execute(select(Chat.id, Chat.chat).where(Chat.id.in_(ids), Chat.user_id == user_id))
+            stmt = select(Chat.id, Chat.chat).where(Chat.id.in_(ids))
+            if project_id:
+                from open_webui.utils.access_control.folders import has_folder_access
+                folder = await Folders.get_folder_by_id(project_id, db=session)
+                if not folder or folder.kind != 'project' or not await has_folder_access(user_id, folder, 'read', session):
+                    return {}
+                stmt = stmt.where(Chat.folder_id == project_id, or_(Chat.user_id == user_id, Chat.visibility == 'project'))
+            else:
+                stmt = stmt.where(Chat.user_id == user_id)
+            result = await session.execute(stmt)
             return {id: chat_search_snippet(body, search_text) for id, body in result.all()}
 
     async def get_chats_by_folder_id_and_user_id(
@@ -2495,6 +2519,7 @@ class ChatTable:
         sort_by: str = 'updated_at',
         sort_dir: str = 'desc',
         unread_for_user_id: str | None = None,
+        project_viewer_id: str | None = None,
         db: AsyncSession | None = None,
     ) -> list[dict]:
         """Get chats in a folder across ALL users. Returns dicts with user_id."""
@@ -2506,6 +2531,8 @@ class ChatTable:
                 .filter_by(archived=False)
                 .where(Chat.meta['internal'].as_boolean().is_not(True))
             )
+            if project_viewer_id:
+                stmt = stmt.where(or_(Chat.user_id == project_viewer_id, Chat.visibility == 'project'))
             stmt = stmt.order_by(*chat_list_order(sort_by, sort_dir, unread_for_user_id))
 
             if skip:
@@ -2603,6 +2630,7 @@ class ChatTable:
         self,
         folder_id: str,
         db: AsyncSession | None = None,
+        project_viewer_id: str | None = None,
     ) -> int:
         async with get_async_db_context(db) as session:
             stmt = (
@@ -2612,6 +2640,8 @@ class ChatTable:
                 .filter_by(archived=False)
                 .where(Chat.meta['internal'].as_boolean().is_not(True))
             )
+            if project_viewer_id:
+                stmt = stmt.where(or_(Chat.user_id == project_viewer_id, Chat.visibility == 'project'))
             result = await session.execute(stmt)
             return result.scalar_one()
 
@@ -2638,6 +2668,8 @@ class ChatTable:
         try:
             async with get_async_db_context(db) as session:
                 chat = await session.get(Chat, id)
+                if chat.folder_id != folder_id:
+                    chat.visibility = 'private'
                 chat.folder_id = folder_id
                 if chat.user_id == user_id:
                     chat.last_read_at = int(time.time())

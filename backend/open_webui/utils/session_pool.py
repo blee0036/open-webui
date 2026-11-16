@@ -69,10 +69,19 @@ async def get_session() -> aiohttp.ClientSession:
             connector_kwargs['limit_per_host'] = 0  # aiohttp: 0 = unlimited
         connector = aiohttp.TCPConnector(**connector_kwargs)
         timeout = get_client_timeout()
+        trace = aiohttp.TraceConfig()
+
+        async def model_headers_sent(session, context, params):
+            attempt = (context.trace_request_ctx or {}).get('quota_attempt')
+            if attempt:
+                await attempt.sent()
+
+        trace.on_request_headers_sent.append(model_headers_sent)
         _session = aiohttp.ClientSession(
             connector=connector,
             timeout=timeout,
             trust_env=True,
+            trace_configs=[trace],
         )
         log.info(
             'Created shared aiohttp session pool (limit=%s, per_host=%s, dns_ttl=%d)',
@@ -103,6 +112,11 @@ async def cleanup_response(
     one-off session, pass it here to close it after the response.
     """
     if response:
+        attempt = getattr(response, 'quota_attempt', None)
+        if attempt:
+            import asyncio
+
+            await asyncio.shield(attempt.finish())
         if not response.closed:
             # aiohttp 3.9+ made ClientResponse.close() synchronous (returns None).
             # Older versions returned a coroutine.  Handle both gracefully.
@@ -132,6 +146,9 @@ async def stream_wrapper(response, session=None, passthrough=False):
         else:
             stream = stream_chunks_handler(response.content)
         async for chunk in stream:
+            attempt = getattr(response, 'quota_attempt', None)
+            if attempt:
+                attempt.feed(chunk)
             yield chunk
     finally:
         await cleanup_response(response, session)

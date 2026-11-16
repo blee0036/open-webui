@@ -34,6 +34,12 @@ async def has_folder_write_access(user_id: str, folder_id: str, db: AsyncSession
     return await has_folder_access(user_id, folder, 'write', db)
 
 
+async def has_folder_chat_access(user_id: str, folder_id: str, db: AsyncSession | None = None) -> bool:
+    """Project readers may create their own private conversations, not edit project material."""
+    folder = await Folders.get_folder_by_id(folder_id, db=db)
+    return bool(folder and await has_folder_access(user_id, folder, 'read' if folder.kind == 'project' else 'write', db))
+
+
 async def has_chat_move_access(
     user_id: str, source_folder_id: str | None, target_folder_id: str | None, db: AsyncSession | None = None
 ) -> bool:
@@ -45,7 +51,7 @@ async def has_chat_move_access(
         while folder_id and folder_id not in seen_ids:
             seen_ids.add(folder_id)
             folder = await Folders.get_folder_by_id(folder_id, db=db)
-            if not folder or folder.user_id != user_id:
+            if not folder or folder.kind == 'project' or folder.user_id != user_id:
                 return None
             if await AccessGrants.get_grants_by_resource('folder', folder.id, db=db):
                 shared_root_id = folder.id

@@ -4,6 +4,8 @@ import urllib.parse
 from typing import Optional
 
 import aiohttp
+from fastapi import HTTPException
+from open_webui.utils.quota_transport import metered_request
 from open_webui.env import AIOHTTP_CLIENT_SESSION_SSL
 from open_webui.utils.json_codec import JSONCodec
 from open_webui.utils.session_pool import get_session
@@ -14,14 +16,20 @@ log = logging.getLogger(__name__)
 default_headers = {'User-Agent': 'Mozilla/5.0'}
 
 
-async def queue_prompt(prompt, client_id, base_url, api_key):
+async def queue_prompt(prompt, client_id, base_url, api_key, *, request, user, model, image_count=1):
     log.info('queue_prompt')
     p = {'prompt': prompt, 'client_id': client_id}
     log.debug('queue_prompt data: %s', p)
     try:
         session = await get_session()
-        async with session.post(
-            f'{base_url}/prompt',
+        async with metered_request(
+            session,
+            request,
+            user,
+            model_id=model,
+            provider='comfyui',
+            image_count=image_count,
+            url=f'{base_url}/prompt',
             json=p,
             headers={**default_headers, 'Authorization': f'Bearer {api_key}'},
             ssl=AIOHTTP_CLIENT_SESSION_SSL,
@@ -66,12 +74,16 @@ async def get_history(prompt_id, base_url, api_key):
         return await r.json()
 
 
-async def _ws_get_images(ws, workflow, client_id, base_url, api_key):
+async def _ws_get_images(ws, workflow, client_id, base_url, api_key, *, request, user, model, image_count=1):
     """Queue a prompt and wait on *ws* for ComfyUI to finish executing it.
 
     Returns a dict of ``{'data': [{'url': ...}, ...]}``.
     """
-    prompt_id = (await queue_prompt(workflow, client_id, base_url, api_key))['prompt_id']
+    prompt_id = (
+        await queue_prompt(
+            workflow, client_id, base_url, api_key, request=request, user=user, model=model, image_count=image_count
+        )
+    )['prompt_id']
     output_images = []
 
     async for msg in ws:
@@ -154,6 +166,13 @@ class ComfyUICreateImageForm(BaseModel):
     seed: Optional[int] = None
 
 
+def _requested_image_count(payload) -> int:
+    """Images billed per call: n only reaches ComfyUI through an 'n' (batch_size) node."""
+    if not any(node.type == 'n' for node in payload.workflow.nodes):
+        return 1
+    return payload.n or 1
+
+
 def _apply_workflow_nodes(workflow, nodes, model, payload):
     """Mutate *workflow* dict in-place based on typed node definitions."""
     for node in nodes:
@@ -196,7 +215,7 @@ def _apply_workflow_nodes(workflow, nodes, model, payload):
                 workflow[node_id]['inputs'][node.key] = node.value
 
 
-async def comfyui_create_image(model: str, payload: ComfyUICreateImageForm, client_id, base_url, api_key):
+async def comfyui_create_image(model: str, payload: ComfyUICreateImageForm, client_id, base_url, api_key, *, request, user):
     ws_url = base_url.replace('http://', 'ws://').replace('https://', 'wss://')
     workflow = JSONCodec.loads(payload.workflow.workflow)
     _apply_workflow_nodes(workflow, payload.workflow.nodes, model, payload)
@@ -213,10 +232,15 @@ async def comfyui_create_image(model: str, payload: ComfyUICreateImageForm, clie
             log.info('WebSocket connection established.')
             log.info('Sending workflow to WebSocket server.')
             log.debug('Workflow: %s', workflow)
-            images = await _ws_get_images(ws, workflow, client_id, base_url, api_key)
+            images = await _ws_get_images(
+                ws, workflow, client_id, base_url, api_key, request=request, user=user, model=model,
+                image_count=_requested_image_count(payload),
+            )
     except aiohttp.WSServerHandshakeError as e:
         log.exception(f'Failed to connect to WebSocket server: {e}')
         return None
+    except HTTPException:
+        raise
     except Exception as e:
         log.exception(f'Error during image generation: {e}')
         return None
@@ -237,7 +261,7 @@ class ComfyUIEditImageForm(BaseModel):
     seed: Optional[int] = None
 
 
-async def comfyui_edit_image(model: str, payload: ComfyUIEditImageForm, client_id, base_url, api_key):
+async def comfyui_edit_image(model: str, payload: ComfyUIEditImageForm, client_id, base_url, api_key, *, request, user):
     ws_url = base_url.replace('http://', 'ws://').replace('https://', 'wss://')
     workflow = JSONCodec.loads(payload.workflow.workflow)
     _apply_workflow_nodes(workflow, payload.workflow.nodes, model, payload)
@@ -254,10 +278,15 @@ async def comfyui_edit_image(model: str, payload: ComfyUIEditImageForm, client_i
             log.info('WebSocket connection established.')
             log.info('Sending workflow to WebSocket server.')
             log.debug('Workflow: %s', workflow)
-            images = await _ws_get_images(ws, workflow, client_id, base_url, api_key)
+            images = await _ws_get_images(
+                ws, workflow, client_id, base_url, api_key, request=request, user=user, model=model,
+                image_count=_requested_image_count(payload),
+            )
     except aiohttp.WSServerHandshakeError as e:
         log.exception(f'Failed to connect to WebSocket server: {e}')
         return None
+    except HTTPException:
+        raise
     except Exception as e:
         log.exception(f'Error during image editing: {e}')
         return None

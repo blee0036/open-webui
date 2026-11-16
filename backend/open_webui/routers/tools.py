@@ -155,7 +155,9 @@ async def get_tools(
         )
 
     # MCP Tool Servers
-    for server in (await Config.get('tool_server.connections', [])) if ENABLE_TOOL_SERVERS else []:
+    from open_webui.utils.personal_connections import personal_mcp_connections
+    mcp_connections = (await Config.get('tool_server.connections', [])) + await personal_mcp_connections(user)
+    for server in mcp_connections if ENABLE_TOOL_SERVERS else []:
         if server.get('type', 'openapi') == 'mcp' and (server.get('config') or {}).get('enable'):
             info = server.get('info') or {}
             server_id = info.get('id')
@@ -540,8 +542,12 @@ async def create_new_tools(
 
             form_data.content = replace_imports(form_data.content)
             tool_module, frontmatter, source_module = await load_tool_module_by_id(
-                form_data.id, content=form_data.content
+                form_data.id, content=form_data.content,
+                sandbox_user_id=user.id if user.role != 'admin' and await Config.get('team.enabled', False) else None,
             )
+            if hasattr(tool_module, '_sandbox_discovery'):
+                form_data.meta.runtime = 'sandbox'
+                form_data.meta.sandbox_schema = tool_module._sandbox_discovery
             form_data.meta.manifest = frontmatter
             form_data.meta.has_user_valves = hasattr(tool_module, 'UserValves')
 
@@ -676,7 +682,13 @@ async def _update_tool(request, id, form_data, user, db, version_id=None):
     try:
         if version_id is None:
             form_data.content = replace_imports(form_data.content)
-        tool_module, frontmatter, source_module = await load_tool_module_by_id(id, content=form_data.content)
+        tool_module, frontmatter, source_module = await load_tool_module_by_id(
+            id, content=form_data.content,
+            sandbox_user_id=user.id if user.role != 'admin' and await Config.get('team.enabled', False) else None,
+        )
+        if hasattr(tool_module, '_sandbox_discovery'):
+            form_data.meta.runtime = 'sandbox'
+            form_data.meta.sandbox_schema = tool_module._sandbox_discovery
         form_data.meta.manifest = frontmatter
         form_data.meta.has_user_valves = hasattr(tool_module, 'UserValves')
 

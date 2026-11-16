@@ -22,6 +22,7 @@ class Folder(Base):
     id = Column(Text, primary_key=True, unique=True)
     parent_id = Column(Text, nullable=True)
     user_id = Column(Text)
+    kind = Column(Text, nullable=False, default='folder', server_default='folder')
     name = Column(Text)
     items = Column(JSON, nullable=True)
     meta = Column(JSON, nullable=True)
@@ -35,6 +36,7 @@ class FolderModel(BaseModel):
     id: str
     parent_id: Optional[str] = None
     user_id: str
+    kind: str = 'folder'
     name: str
     items: Optional[dict] = None
     meta: Optional[dict] = None
@@ -53,6 +55,7 @@ class FolderMetadataResponse(BaseModel):
 class FolderNameIdResponse(BaseModel):
     id: str
     user_id: str
+    kind: str = 'folder'
     name: str
     meta: Optional[FolderMetadataResponse] = None
     parent_id: Optional[str] = None

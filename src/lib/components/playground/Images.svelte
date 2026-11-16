@@ -5,6 +5,7 @@
 
 	import { user } from '$lib/stores';
 	import { imageGenerations, imageEdits } from '$lib/apis/images';
+	import { getErrorMessage } from '$lib/apis/openai';
 
 	import Spinner from '$lib/components/common/Spinner.svelte';
 
@@ -12,6 +13,7 @@
 
 	let loaded = false;
 	let loading = false;
+	let requestError = '';
 
 	let prompt = '';
 	let sourceImages: string[] = [];
@@ -71,6 +73,7 @@
 		}
 
 		loading = true;
+		requestError = '';
 		try {
 			let result;
 			if (sourceImages.length > 0) {
@@ -91,7 +94,7 @@
 			}
 		} catch (error) {
 			console.error('Image generation/edit error:', error);
-			toast.error(`${error}`);
+			requestError = getErrorMessage(error, $i18n.t('Server connection failed'));
 		} finally {
 			loading = false;
 		}
@@ -113,7 +116,7 @@
 	};
 
 	onMount(async () => {
-		if ($user?.role !== 'admin') {
+		if ($user?.role !== 'admin' && !$user?.permissions?.features?.playground) {
 			await goto('/');
 			return;
 		}
@@ -124,6 +127,14 @@
 <div class=" flex flex-col justify-between w-full overflow-y-auto h-full">
 	<div class="mx-auto w-full md:px-0 h-full">
 		<div class=" flex flex-col h-full px-2.5">
+			{#if requestError}
+				<p
+					role="alert"
+					class="mb-3 rounded-xl bg-amber-50 p-3 text-sm text-amber-900 dark:bg-amber-950 dark:text-amber-200"
+				>
+					{requestError}
+				</p>
+			{/if}
 			<!-- Results Area -->
 			<div
 				class=" pt-0.5 pb-2.5 flex flex-col justify-between w-full flex-auto overflow-auto h-0"

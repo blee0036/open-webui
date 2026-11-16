@@ -164,7 +164,7 @@ def _sanitize_proxy_path(path: str) -> str | None:
     methods=['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'],
 )
 async def browser_http(request: Request, server_id: str, sid: str, ticket: str, path: str):
-    user, data = await browser_access(server_id, sid, ticket)
+    user, data = await browser_access(server_id, sid, ticket, request)
     request.state.browser_auth = data['relay']
     request.scope['path_params']['chat_id'] = data.get('chat', '')
     return await proxy_terminal(server_id, f'browser/view/{sid}/{data["capability"]}/{path}', request, user)
@@ -191,10 +191,10 @@ async def relay_to_browser(ws, upstream):
             return
 
 
-async def watch_access(server_id, sid, ticket):
+async def watch_access(server_id, sid, ticket, request=None):
     while True:
         await asyncio.sleep(10)
-        current_user, _ = await browser_access(server_id, sid, ticket)
+        current_user, _ = await browser_access(server_id, sid, ticket, request)
         latest = await get_terminal_connections(current_user)
         current = next((c for c in latest if c.get('id') == server_id), None)
         if (
@@ -209,8 +209,9 @@ async def watch_access(server_id, sid, ticket):
 
 @router.websocket('/{server_id}/browser/view/{sid}/{ticket}/{kind}')
 async def browser_ws(ws: WebSocket, server_id: str, sid: str, ticket: str, kind: str):
+    request = Request({**ws.scope, 'type': 'http', 'method': 'GET'})
     try:
-        user, data = await browser_access(server_id, sid, ticket)
+        user, data = await browser_access(server_id, sid, ticket, request)
         connections = await get_terminal_connections(user)
         connection = next((c for c in connections if c.get('id') == server_id), None)
         if (
@@ -223,6 +224,8 @@ async def browser_ws(ws: WebSocket, server_id: str, sid: str, ticket: str, kind:
         ):
             raise HTTPException(403, 'Browser access denied')
         chat = data.get('chat', '')
+        from open_webui.utils.sandboxes import bind_managed_connection
+        connection = await bind_managed_connection(connection, user, {'chat_id': chat})
         context = terminal_context_id(connection, {'chat_id': chat}, 'chat')
         if terminal_context_config(connection, 'chat').get('context_id') == 'chat_id' and not context:
             raise HTTPException(403, 'Saved chat required')
@@ -251,7 +254,7 @@ async def browser_ws(ws: WebSocket, server_id: str, sid: str, ticket: str, kind:
                 tasks = [
                     asyncio.create_task(relay_from_browser(ws, upstream)),
                     asyncio.create_task(relay_to_browser(ws, upstream)),
-                    asyncio.create_task(watch_access(server_id, sid, ticket)),
+                    asyncio.create_task(watch_access(server_id, sid, ticket, request)),
                 ]
                 await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
     except aiohttp.WSServerHandshakeError as exc:
@@ -309,6 +312,10 @@ async def proxy_terminal(
 
     if connection is None:
         return JSONResponse({'error': f"Terminal server '{server_id}' not found"}, status_code=404)
+
+    from open_webui.utils.sandboxes import bind_managed_connection
+    connection = await bind_managed_connection(connection, user, {
+        'chat_id': request.path_params.get('chat_id') or request.headers.get('x-session-id')})
 
     if not connection.get('enabled', True):
         return JSONResponse({'error': 'Terminal server disabled'}, status_code=403)
@@ -628,6 +635,9 @@ async def _proxy_terminal_websocket(
         return
     user, connection, chat_id, token = result
 
+    from open_webui.utils.sandboxes import bind_managed_connection
+    connection = await bind_managed_connection(connection, user, {'chat_id': chat_id})
+
     base_url = get_terminal_server_url(connection)
     if not base_url:
         await ws.close(code=4003, reason='Terminal server URL not configured')
@@ -735,6 +745,9 @@ async def _proxy_terminal_websocket(
                         await asyncio.sleep(10)
                         if await _resolve_terminal_access(ws, server_id, token) is None:
                             return
+                        if connection.get('managed'):
+                            from open_webui.utils.sandboxes import workspace_scope
+                            await workspace_scope(user, {'chat_id': chat_id})
                 except Exception:
                     log.exception('Terminal access recheck failed')
                     with suppress(Exception):

@@ -113,7 +113,7 @@ def approval_required_from_call(call, tool):
     return review['required']
 
 
-async def requires_tool_approval(form_data, metadata, call, tool, params):
+async def requires_tool_approval(form_data, metadata, call, tool, params, *, request=None, user=None):
     mode = metadata.get('params', {}).get('tool_approval_mode', 'full')
     if mode == 'full' or (call.get('name') == 'ask_user' and tool.get('type') == 'builtin'):
         return False
@@ -150,14 +150,14 @@ async def requires_tool_approval(form_data, metadata, call, tool, params):
             return approval_required_from_call(call, tool)
         if engine != 'decisions':
             return True
-        return await review_with_decisions(form_data, metadata, call, tool, params)
+        return await review_with_decisions(form_data, metadata, call, tool, params, request=request, user=user)
     except Exception:
         # CancelledError propagates; review errors never expose provider bodies or permit execution.
         call['permission_review'] = {'reason': 'review_unavailable'}
         return True
 
 
-async def review_with_decisions(form_data, metadata, call, tool, params):
+async def review_with_decisions(form_data, metadata, call, tool, params, *, request=None, user=None):
     settings = await get_tool_permissions_auto_config()
     validate_decisions_config(settings['api_base_url'], settings['model'])
     threshold = settings['threshold']
@@ -193,7 +193,9 @@ async def review_with_decisions(form_data, metadata, call, tool, params):
         ],
     }
     async with asyncio.timeout(5):
-        response = await post_decisions(payload, settings['api_base_url'], settings['api_key'])
+        response = await post_decisions(
+            payload, settings['api_base_url'], settings['api_key'], request=request, user=user
+        )
     probability = parse_decision_scores(response, {'requires_confirmation'})['requires_confirmation']
     call['permission_review'] = {'engine': 'decisions', 'probability': probability, 'threshold': threshold}
     return probability >= threshold

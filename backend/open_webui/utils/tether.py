@@ -392,6 +392,10 @@ async def get_terminal_connections(user):
     """Resolve personal targets alongside existing configured servers."""
     user_id = user['id'] if isinstance(user, dict) else user.id
     connections = list(await Config.get('terminal_server.connections', []) or [])
+    if await Config.get('team.enabled', False) and await Config.get('team.sandbox.url'):
+        from open_webui.models.users import UserModel
+        from open_webui.utils.sandboxes import managed_connection
+        connections.insert(0, await managed_connection(user if isinstance(user, UserModel) else UserModel(**user)))
     for presence in await hub.presences(user_id):
         if 'open_terminal' not in presence.get('services', []):
             continue

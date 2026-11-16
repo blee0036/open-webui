@@ -36,6 +36,19 @@
 	const i18n = getContext('i18n');
 
 	let loaded = false;
+	let enterprises: { id: string; name: string; platform: string }[] = [];
+	let enterprise = '';
+	let enterpriseError = '';
+	const loadEnterprises = async () => {
+		try {
+			const response = await fetch(`${WEBUI_API_BASE_URL}/enterprise/connections`);
+			if (!response.ok) throw new Error($i18n.t('Enterprise login is unavailable'));
+			enterprises = await response.json();
+			enterpriseError = '';
+		} catch (error) {
+			enterpriseError = error instanceof Error ? error.message : String(error);
+		}
+	};
 
 	let mode = $config?.features.enable_ldap ? 'ldap' : 'signin';
 
@@ -216,6 +229,7 @@
 		}
 		if (!logout) await oauthCallbackHandler();
 		form = $page.url.searchParams.get('form');
+		await loadEnterprises();
 
 		// Auto-redirect to SSO when OAUTH_AUTO_REDIRECT is enabled and the
 		// deployment is unambiguously SSO-only (single provider, no login form,
@@ -225,6 +239,8 @@
 			const providers = Object.keys($config?.oauth?.providers ?? {});
 			if (
 				providers.length === 1 &&
+				!enterprises.length &&
+				!enterpriseError &&
 				$config?.features?.auth !== false &&
 				$config?.features?.enable_login_form === false &&
 				!$config?.features?.enable_ldap &&
@@ -520,6 +536,39 @@
 								</div>
 							</form>
 
+							{#if enterprises.length > 0}
+								<form
+									class="mt-5 space-y-3 text-left"
+									on:submit|preventDefault={() => {
+										if (enterprise)
+											window.location.href = `${WEBUI_API_BASE_URL}/enterprise/${encodeURIComponent(enterprise)}/login`;
+									}}
+								>
+									<label class="block text-sm" for="enterprise-login"
+										>{$i18n.t('Select your enterprise')}</label
+									>
+									<select
+										id="enterprise-login"
+										class="w-full rounded-xl bg-gray-100 px-4 py-3 text-sm dark:bg-gray-900"
+										bind:value={enterprise}
+										required
+									>
+										<option value="" disabled>{$i18n.t('Select your enterprise')}</option>
+										{#each enterprises as item}<option value={item.id}
+												>{item.name} · {item.platform === 'lark' ? 'Lark' : '飞书'}</option
+											>{/each}
+									</select>
+									<button
+										class="w-full rounded-full bg-gray-900 px-4 py-3 text-sm text-white disabled:opacity-40 dark:bg-gray-100 dark:text-gray-900"
+										disabled={!enterprise}>{$i18n.t('Continue with enterprise account')}</button
+									>
+								</form>
+							{:else if enterpriseError}
+								<button
+									class="mt-4 text-sm text-amber-700 dark:text-amber-300"
+									on:click={loadEnterprises}>{enterpriseError} · {$i18n.t('Retry')}</button
+								>
+							{/if}
 							{#if Object.keys($config?.oauth?.providers ?? {}).length > 0}
 								<div class="inline-flex items-center justify-center w-full">
 									<hr class="w-32 h-px my-4 border-0 dark:bg-gray-100/10 bg-gray-700/10" />

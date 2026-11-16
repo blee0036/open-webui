@@ -51,6 +51,7 @@
 		terminalServers,
 		functions,
 		selectedFolder,
+		activeProjectId,
 		showEmbeds,
 		selectedTerminalId,
 		showFileNavPath,
@@ -435,6 +436,23 @@
 	}
 
 	let chat: any = null;
+	let projectFolderId: string | null | undefined;
+	async function updateProjectScope(id: string | null) {
+		projectFolderId = id;
+		activeProjectId.set(null);
+		if (!id) return;
+		try {
+			const { getFolderById } = await import('$lib/apis/folders');
+			const folder = await getFolderById(localStorage.token, id);
+			if (projectFolderId === id) activeProjectId.set(folder?.kind === 'project' ? id : null);
+		} catch {
+			/* Revoked project access is not a reason to search a different scope. */
+		}
+	}
+	$: if ((chat?.folder_id ?? $selectedFolder?.id ?? null) !== projectFolderId) {
+		void updateProjectScope(chat?.folder_id ?? $selectedFolder?.id ?? null);
+	}
+	onDestroy(() => activeProjectId.set(null));
 	let tags = [];
 
 	// Non-owners may reply when the sharing mode allows it, but cannot save chat edits.
@@ -1153,6 +1171,13 @@
 				featureAvailable(feature) &&
 				currentModels.every((model) => model.info?.meta?.defaultFeatureIds?.includes(feature));
 			const folderTerminalId = !history.currentId ? $selectedFolder?.data?.terminal_id : null;
+			const personalWorkspaceDefault =
+				!history.currentId &&
+				!$selectedFolder &&
+				$config?.features?.enable_team_workspaces &&
+				isTerminalAvailable('managed')
+					? 'managed'
+					: null;
 			const terminalId =
 				!history.currentId && $selectedFolder
 					? folderTerminalId
@@ -1190,7 +1215,7 @@
 					(folderTerminalId ||
 						currentModels.every((model) => model.info?.meta?.terminalId === terminalId))
 						? terminalId
-						: $selectedTerminalId
+						: ($selectedTerminalId ?? personalWorkspaceDefault)
 			};
 
 			if (preserveSelections) {

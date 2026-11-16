@@ -102,7 +102,7 @@ from open_webui.retrieval.web.main import SearchResult
 from open_webui.retrieval.web.microsoft_web_iq import search_microsoft_web_iq
 from open_webui.retrieval.web.mojeek import search_mojeek
 from open_webui.retrieval.web.ollama import search_ollama_cloud
-from open_webui.retrieval.web.perplexity import search_perplexity
+from open_webui.retrieval.web.perplexity import search_perplexity_metered
 from open_webui.retrieval.web.perplexity_search import search_perplexity_search
 from open_webui.retrieval.web.searchapi import search_searchapi
 from open_webui.retrieval.web.openserp import search_openserp
@@ -2547,8 +2547,9 @@ async def search_web(
                 'AZURE_AI_SEARCH_API_KEY, AZURE_AI_SEARCH_ENDPOINT, and AZURE_AI_SEARCH_INDEX_NAME are required for Azure AI Search'
             )
     elif engine == 'perplexity':
-        return await asyncio.to_thread(
-            search_perplexity,
+        return await search_perplexity_metered(
+            request,
+            user,
             config['web.search.perplexity_api_key'],
             query,
             config['web.search.result_count'],

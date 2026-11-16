@@ -43,6 +43,7 @@ from open_webui.utils.images.comfyui import (
     comfyui_upload_image,
 )
 from open_webui.utils.json_codec import JSONCodec
+from open_webui.utils.quota_transport import metered_request
 from open_webui.utils.session_pool import get_session
 from PIL import Image, ImageOps
 from pydantic import BaseModel
@@ -672,7 +673,13 @@ async def image_generations(
             }
 
             session = await get_session()
-            async with session.post(
+            async with metered_request(
+                session,
+                request,
+                user,
+                model_id=model,
+                provider='openai',
+                image_count=form_data.n or 1,
                 url=url,
                 json=data,
                 headers=headers,
@@ -724,7 +731,14 @@ async def image_generations(
                 data = {'contents': [{'parts': [{'text': form_data.prompt}]}]}
 
             session = await get_session()
-            async with session.post(
+            async with metered_request(
+                session,
+                request,
+                user,
+                model_id=model.removesuffix(':predict').removesuffix(':generateContent'),
+                provider='gemini',
+                # :predict honours sampleCount; generateContent returns one candidate.
+                image_count=(form_data.n or 1) if model.endswith(':predict') else 1,
                 url=f'{image_config.IMAGES_GEMINI_API_BASE_URL}/models/{model}',
                 json=data,
                 headers=headers,
@@ -786,7 +800,7 @@ async def image_generations(
                 form_data,
                 str(uuid.uuid4()),
                 image_config.COMFYUI_BASE_URL,
-                image_config.COMFYUI_API_KEY,
+                image_config.COMFYUI_API_KEY, request=request, user=user,
             )
             log.debug('res: %s', res)
 
@@ -836,7 +850,15 @@ async def image_generations(
                 data = {**data, **image_config.AUTOMATIC1111_PARAMS}
 
             session = await get_session()
-            async with session.post(
+            # Self-hosted checkpoint: priced per call via the checkpoint's ModelPrice
+            # (e.g. fixed(0.01)); A1111 reports no token usage.
+            async with metered_request(
+                session,
+                request,
+                user,
+                model_id=model,
+                provider='automatic1111',
+                image_count=form_data.n or 1,
                 url=f'{image_config.AUTOMATIC1111_BASE_URL}/sdapi/v1/txt2img',
                 json=data,
                 headers={'authorization': get_automatic1111_api_auth(image_config)},
@@ -858,6 +880,8 @@ async def image_generations(
                 )
                 images.append(image_file)
             return images
+    except HTTPException:
+        raise
     except Exception as e:
         error = e
         if isinstance(e, aiohttp.ClientResponseError):
@@ -1055,7 +1079,13 @@ async def image_edits(
                 )
 
             session = await get_session()
-            async with session.post(
+            async with metered_request(
+                session,
+                request,
+                user,
+                model_id=model,
+                provider='openai',
+                image_count=form_data.n or 1,
                 url=f'{image_config.IMAGES_EDIT_OPENAI_API_BASE_URL}/images/edits{url_search_params}',
                 headers=headers,
                 data=form,
@@ -1112,7 +1142,12 @@ async def image_edits(
                 )
 
             session = await get_session()
-            async with session.post(
+            async with metered_request(
+                session,
+                request,
+                user,
+                model_id=model.removesuffix(':generateContent'),
+                provider='gemini',
                 url=f'{image_config.IMAGES_EDIT_GEMINI_API_BASE_URL}/models/{model}',
                 json=data,
                 headers=headers,
@@ -1183,7 +1218,7 @@ async def image_edits(
                 form_data,
                 str(uuid.uuid4()),
                 image_config.IMAGES_EDIT_COMFYUI_BASE_URL,
-                image_config.IMAGES_EDIT_COMFYUI_API_KEY,
+                image_config.IMAGES_EDIT_COMFYUI_API_KEY, request=request, user=user,
             )
             log.debug('res: %s', res)
 
@@ -1220,6 +1255,8 @@ async def image_edits(
                 images.append(image_file)
 
             return images
+    except HTTPException:
+        raise
     except Exception as e:
         error = e
         if isinstance(e, aiohttp.ClientResponseError):

@@ -854,7 +854,8 @@ async def create_new_chat(
     user=Depends(get_verified_user),
     db: AsyncSession = Depends(get_async_session),
 ):
-    if form_data.folder_id is not None and not await has_folder_write_access(user.id, form_data.folder_id, db=db):
+    from open_webui.utils.access_control.folders import has_folder_chat_access
+    if form_data.folder_id is not None and not await has_folder_chat_access(user.id, form_data.folder_id, db=db):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=ERROR_MESSAGES.NOT_FOUND,
@@ -970,6 +971,7 @@ async def search_user_chats(
     request: Request,
     text: str,
     page: int | None = None,
+    project_id: str | None = None,
     user=Depends(get_verified_user),
     db: AsyncSession = Depends(get_async_session),
 ):
@@ -979,11 +981,14 @@ async def search_user_chats(
     limit = 60
     skip = (page - 1) * limit
 
-    chat_list = await Chats.get_chats_by_user_id_and_search_text(user.id, text, skip=skip, limit=limit, db=db)
+    if project_id:
+        from open_webui.routers.projects import authorized_project
+        await authorized_project(project_id, user, db=db)
+    chat_list = await Chats.get_chats_by_user_id_and_search_text(user.id, text, skip=skip, limit=limit, db=db, project_id=project_id)
 
     # Delete tag if no chat is found
     words = text.strip().split(' ')
-    if page == 1 and len(words) == 1 and words[0].startswith('tag:'):
+    if not project_id and page == 1 and len(words) == 1 and words[0].startswith('tag:'):
         tag_id = words[0].replace('tag:', '')
         if len(chat_list) == 0 and await Chats.count_chats_by_tag_name_and_user_id(tag_id, user.id, db=db) == 0:
             if await Tags.get_tag_by_name_and_user_id(tag_id, user.id, db=db):
@@ -2328,7 +2333,8 @@ async def update_chat_folder_id_by_id(
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=ERROR_MESSAGES.DEFAULT())
     if chat:
         # None is allowed: it moves the chat out of any folder.
-        if form_data.folder_id is not None and not await has_folder_write_access(user.id, form_data.folder_id, db=db):
+        from open_webui.utils.access_control.folders import has_folder_chat_access
+        if form_data.folder_id is not None and not await has_folder_chat_access(user.id, form_data.folder_id, db=db):
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=ERROR_MESSAGES.NOT_FOUND,

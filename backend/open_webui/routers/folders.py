@@ -174,6 +174,8 @@ async def create_folder(
     # Check if creating a subfolder in a shared folder
     if form_data.parent_id:
         parent = await Folders.get_folder_by_id(form_data.parent_id, db=db)
+        if parent and parent.kind == 'project':
+            raise HTTPException(400, 'Projects do not use legacy shared subfolders')
         if parent and parent.user_id != user.id:
             # Creating subfolder in someone else's shared folder
             if user.role != 'admin' and not await _has_folder_access(user.id, parent, 'write', db):
@@ -342,6 +344,8 @@ async def update_folder_name_by_id(
             )
 
     if folder:
+        if folder.kind == 'project' and form_data.data:
+            raise HTTPException(400, 'Edit project context and publish reference files through the project interface')
         if (
             user.role != 'admin'
             and user.id != folder.user_id
@@ -424,6 +428,9 @@ async def update_folder_parent_id_by_id(
     await check_folders_permission(request, user, db=db)
     folder = await Folders.get_folder_by_id_and_user_id(id, user.id, db=db)
     if folder:
+        target = await Folders.get_folder_by_id(form_data.parent_id, db=db) if form_data.parent_id else None
+        if folder.kind == 'project' or (target and target.kind == 'project'):
+            raise HTTPException(400, 'Projects and legacy folders cannot be nested into each other')
         existing_folder = await Folders.get_folder_by_parent_id_and_user_id_and_name(
             form_data.parent_id, user.id, folder.name, db=db
         )
@@ -531,6 +538,8 @@ async def update_folder_access_by_id(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=ERROR_MESSAGES.NOT_FOUND,
         )
+    if folder.kind == 'project':
+        raise HTTPException(400, 'Manage project membership through the project interface')
 
     # Editing folder contents does not grant permission to manage sharing.
     if user.role != 'admin' and user.id != folder.user_id:
@@ -610,9 +619,12 @@ async def get_shared_folder_chats(
         sort_by=sort_by,
         sort_dir=sort_dir,
         unread_for_user_id=user.id,
+        project_viewer_id=user.id if folder.kind == 'project' else None,
         db=db,
     )
-    total = await Chats.count_all_chats_by_folder_id(id, db=db) if page is not None else len(chats)
+    total = await Chats.count_all_chats_by_folder_id(
+        id, db=db, project_viewer_id=user.id if folder.kind == 'project' else None
+    ) if page is not None else len(chats)
 
     participant_ids = await Chats.get_participant_ids_by_chat_ids([chat['id'] for chat in chats], db=db)
     user_ids = {chat['user_id'] for chat in chats}

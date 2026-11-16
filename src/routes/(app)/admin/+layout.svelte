@@ -84,6 +84,13 @@
 							href="/admin/evaluations">{$i18n.t('Evaluations')}</a
 						>
 
+						<a
+							draggable="false"
+							class="min-w-fit px-1 text-sm {$page.url.pathname.includes('/admin/team')
+								? ''
+								: 'text-gray-400 dark:text-gray-500'}"
+							href="/admin/team">{$i18n.t('Team & quota')}</a
+						>
 						{#if $config?.features?.enable_functions}
 							<a
 								draggable="false"

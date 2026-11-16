@@ -345,27 +345,45 @@ def parse_decision_scores(response: dict, expected_names: set[str]) -> dict[str,
     return scores
 
 
-async def post_decisions(payload: dict, base_url: str, api_key: str) -> dict:
+async def post_decisions(payload: dict, base_url: str, api_key: str, *, request=None, user=None) -> dict:
+    from open_webui.utils.quota_transport import metered_request
     from open_webui.utils.session_pool import get_session
 
     session = await get_session()
     headers = {'Content-Type': 'application/json'}
     if api_key:
         headers['Authorization'] = f'Bearer {api_key}'
-    async with session.post(
-        f'{base_url.rstrip("/")}/decisions',
-        json=payload,
-        headers=headers,
-        timeout=aiohttp.ClientTimeout(total=15),
-        ssl=AIOHTTP_CLIENT_SESSION_SSL,
-        allow_redirects=False,
-    ) as response:
+    options = {
+        'url': f'{base_url.rstrip("/")}/decisions',
+        'json': payload,
+        'headers': headers,
+        'timeout': aiohttp.ClientTimeout(total=15),
+        'ssl': AIOHTTP_CLIENT_SESSION_SSL,
+        'allow_redirects': False,
+    }
+    # Keep the old actor-less utility contract when quotas are off. With
+    # quotas enabled, every decisions inference must have an actual actor.
+    context = (
+        metered_request(
+            session, request, user, model_id=payload['model'],
+            estimated_usage={
+                'input_tokens': len(JSONCodec.dumps(payload, ensure_ascii=False).encode()),
+                'output_tokens': 1024,
+            },
+            **options,
+        )
+        if user is not None or await Config.get('team.quota.enabled', False)
+        else session.post(**options)
+    )
+    async with context as response:
         if response.status != 200:
             raise ToolSearchError(f'Decisions API request failed: HTTP {response.status}')
         return await response.json(loads=JSONCodec.loads)
 
 
-async def search_tools_with_decisions(query: str, candidates: dict[str, dict], count: int) -> list[str]:
+async def search_tools_with_decisions(
+    query: str, candidates: dict[str, dict], count: int, *, request=None, user=None
+) -> list[str]:
     config = await Config.get_many(
         'chat.tool_search.decisions.api_base_url',
         'chat.tool_search.decisions.api_key',
@@ -386,7 +404,9 @@ async def search_tools_with_decisions(query: str, candidates: dict[str, dict], c
             for start in range(0, len(names), DECISIONS_BATCH_SIZE):
                 batch = {name: candidates[name] for name in names[start : start + DECISIONS_BATCH_SIZE]}
                 payload = build_decisions_payload(query, batch, model, config['chat.tool_search.decisions.prompt'])
-                result = await post_decisions(payload, base_url, config['chat.tool_search.decisions.api_key'])
+                result = await post_decisions(
+                    payload, base_url, config['chat.tool_search.decisions.api_key'], request=request, user=user
+                )
                 scores.update(parse_decision_scores(result, set(batch)))
     except TimeoutError:
         raise ToolSearchError('Decisions API search timed out.') from None
@@ -476,7 +496,7 @@ async def rank_deferred_tools(
     if engine == 'bm25':
         return search_deferred_tools(query, candidates, count)
     if engine == 'decisions':
-        return await search_tools_with_decisions(query, candidates, count)
+        return await search_tools_with_decisions(query, candidates, count, request=request, user=user)
     if engine == 'embeddings':
         try:
             return await search_tools_with_embeddings(query, candidates, count, request, user)

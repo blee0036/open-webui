@@ -278,7 +278,12 @@ async def search_workspace(  # noqa: C901 — keep permission scoping and source
             SharedChat.chat['share_mode'].as_string() == 'continue', granted('shared_chat', SharedChat.chat_id)
         )
         live_access = or_(
-            Chat.user_id == user.id, Chat.folder_id.in_(select(folders.c.id)), Chat.id.in_(continue_shared)
+            Chat.user_id == user.id,
+            and_(Chat.folder_id.in_(select(folders.c.id)), or_(
+                Chat.visibility == 'project',
+                Chat.folder_id.in_(select(Folder.id).where(Folder.kind != 'project')),
+            )),
+            Chat.id.in_(continue_shared),
         )
         live_ids = select(Chat.id).where(live_access)
         rank = (

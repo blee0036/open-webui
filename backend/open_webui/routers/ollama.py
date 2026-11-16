@@ -44,6 +44,7 @@ from open_webui.utils.payload import (
     apply_system_prompt_to_body,
 )
 from open_webui.utils.session_pool import cleanup_response, get_client_timeout, get_session, stream_wrapper
+from open_webui.utils.quota_transport import model_request
 from pydantic import BaseModel, ConfigDict, validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -103,6 +104,7 @@ async def send_request(
     metadata: dict | None = None,
     api_config: dict | None = None,
     request: Request | None = None,
+    meter_inference: bool = True,
 ):
     r = None
     streaming = False
@@ -111,15 +113,22 @@ async def send_request(
 
         headers, cookies = await get_headers_and_cookies(request, url, key, api_config, metadata, user=user)
 
-        r = await session.request(
-            method,
-            url,
+        path = urlparse(url).path.rstrip('/')
+        native = path.endswith(('/api/chat', '/api/generate'))
+        send = model_request if meter_inference and user and (native or path.endswith(('/chat/completions', '/completions', '/messages', '/responses'))) else None
+        provider = 'ollama' if native else 'anthropic' if path.endswith('/messages') else 'openai'
+        r = await (send(session, request, user,
+            provider=provider, method=method, url=url,
+            data=payload, headers=headers, cookies=cookies,
+            ssl=AIOHTTP_CLIENT_SESSION_SSL, timeout=get_client_timeout(stream=stream),
+        ) if send else session.request(
+            method, url,
             data=payload,
             headers=headers,
             cookies=cookies,
             ssl=AIOHTTP_CLIENT_SESSION_SSL,
             timeout=get_client_timeout(stream=stream),
-        )
+        ))
 
         if not r.ok:
             retry_headers = {k: v for k, v in r.headers.items() if k.lower() in ('retry-after', 'retry-after-ms')}
@@ -643,6 +652,7 @@ async def unload_model(
                 user=user,
                 api_config=api_config,
                 request=request,
+                meter_inference=False,  # This admin-only keep_alive=0 operation is not inference.
             )
             results.append({'url_idx': idx, 'success': True, 'response': res})
         except Exception as e:

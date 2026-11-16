@@ -59,6 +59,8 @@ from open_webui.utils.auth import get_admin_user, get_verified_user
 from open_webui.utils.headers import include_user_info_headers
 from open_webui.utils.json_codec import JSONCodec
 from open_webui.utils.misc import strict_match_mime_type
+from open_webui.utils.session_pool import cleanup_response
+from open_webui.utils.quota_transport import model_request, metered_request, RealtimeMeter
 from open_webui.utils.session_pool import get_session
 from pydantic import BaseModel, Field
 
@@ -453,7 +455,7 @@ async def _tts_openai(request, payload, file_path, file_body_path, user):
     r = None
     try:
         session = await get_session()
-        r = await session.post(
+        r = await model_request(session, request, user, model_id=payload['model'], method='POST',
             url=f'{api_base_url}/audio/speech',
             json=payload,
             headers=headers,
@@ -479,6 +481,10 @@ async def _tts_openai(request, payload, file_path, file_body_path, user):
     except Exception as exc:
         log.exception(exc)
         await _raise_tts_error(exc, r)
+    finally:
+        await cleanup_response(r)
+
+
 
 
 async def _tts_openai_realtime(request, payload, file_path, file_body_path, user):
@@ -500,6 +506,7 @@ async def _tts_openai_realtime(request, payload, file_path, file_body_path, user
     if ENABLE_FORWARD_USER_INFO_HEADERS:
         headers = include_user_info_headers(headers, user)
 
+    meter = RealtimeMeter(user, payload['model'])
     try:
         async with asyncio.timeout(120):
             session = await get_session()
@@ -514,6 +521,7 @@ async def _tts_openai_realtime(request, payload, file_path, file_body_path, user
                     if message.type != aiohttp.WSMsgType.TEXT:
                         continue
                     event = message.json()
+                    await meter.observe(event)
                     event_type = event['type']
                     if event_type == 'error':
                         # Provider messages may contain input text or credentials.
@@ -539,7 +547,7 @@ async def _tts_openai_realtime(request, payload, file_path, file_body_path, user
                             }
                         )
                     elif event_type == 'session.updated':
-                        await ws.send_json(
+                        await meter.send(ws,
                             {
                                 'type': 'response.create',
                                 'response': {
@@ -583,6 +591,9 @@ async def _tts_openai_realtime(request, payload, file_path, file_body_path, user
     except (ValueError, KeyError, TypeError):
         raise HTTPException(502, 'OpenAI Realtime returned invalid audio or event data.') from None
 
+    finally:
+        await asyncio.shield(meter.close())
+
     audio = io.BytesIO()
     with wave.open(audio, 'wb') as wav:
         wav.setnchannels(1)
@@ -614,8 +625,8 @@ async def _tts_elevenlabs(request, payload, file_path, file_body_path, user):
     r = None
     try:
         session = await get_session()
-        async with session.post(
-            f'{ELEVENLABS_API_BASE_URL}/v1/text-to-speech/{voice_id}',
+        async with metered_request(session, request, user, model_id=await Config.get('audio.tts.model') or 'elevenlabs',
+            url=f'{ELEVENLABS_API_BASE_URL}/v1/text-to-speech/{voice_id}',
             json={
                 'text': payload['input'],
                 'model_id': await Config.get('audio.tts.model'),
@@ -654,8 +665,8 @@ async def _tts_azure(request, payload, file_path, file_body_path, user):
     r = None
     try:
         session = await get_session()
-        async with session.post(
-            (az_base or f'https://{az_region}.tts.speech.microsoft.com') + '/cognitiveservices/v1',
+        async with metered_request(session, request, user, model_id=await Config.get('audio.tts.model') or 'azure-speech',
+            url=(az_base or f'https://{az_region}.tts.speech.microsoft.com') + '/cognitiveservices/v1',
             headers={
                 'Ocp-Apim-Subscription-Key': await Config.get('audio.tts.api_key'),
                 'Content-Type': 'application/ssml+xml',
@@ -720,7 +731,7 @@ async def _tts_mistral(request, payload, file_path, file_body_path, user):
     r = None
     try:
         session = await get_session()
-        r = await session.post(
+        r = await model_request(session, request, user, model_id=await Config.get('audio.tts.model') or 'voxtral-mini-tts-2603', method='POST',
             url=f'{api_base_url}/audio/speech',
             json={
                 'input': payload.get('input', ''),  # text to synthesize
@@ -746,6 +757,8 @@ async def _tts_mistral(request, payload, file_path, file_body_path, user):
     except Exception as exc:
         log.exception(exc)
         await _raise_tts_error(exc, r)
+    finally:
+        await cleanup_response(r)
 
 
 # Dispatcher map: engine name -> handler
@@ -908,6 +921,7 @@ async def _transcribe_openai(request, file_path, filename, languages, file_dir, 
             headers = include_user_info_headers(headers, user)
 
         for language in languages:
+            await cleanup_response(r)
             payload = {'model': await Config.get('audio.stt.model')}
             if language:
                 payload['language'] = language
@@ -920,7 +934,7 @@ async def _transcribe_openai(request, file_path, filename, languages, file_dir, 
                         'format': 'ogg' if ext == 'oga' else ext,
                     }
 
-                r = await session.post(
+                r = await model_request(session, request, user, model_id=await Config.get('audio.stt.model') or 'whisper-1', method='POST',
                     url=f'{api_base_url}/audio/transcriptions',
                     headers={**headers, 'Content-Type': 'application/json'},
                     json=payload,
@@ -938,7 +952,7 @@ async def _transcribe_openai(request, file_path, filename, languages, file_dir, 
 
                 form_data.add_field('file', audio_chunks(), filename=filename)
 
-                r = await session.post(
+                r = await model_request(session, request, user, model_id=await Config.get('audio.stt.model') or 'whisper-1', method='POST',
                     url=f'{api_base_url}/audio/transcriptions',
                     headers=headers,
                     data=form_data,
@@ -955,6 +969,8 @@ async def _transcribe_openai(request, file_path, filename, languages, file_dir, 
         async with aiofiles.open(os.path.join(file_dir, f'{id}.json'), 'w') as f:
             await f.write(JSONCodec.dumps(data))
         return data
+    except HTTPException:
+        raise
     except Exception as e:
         log.exception(e)
         detail = None
@@ -971,9 +987,13 @@ async def _transcribe_openai(request, file_path, filename, languages, file_dir, 
         # Do not alter, remove, obscure, or replace it except as LICENSE permits:
         # https://docs.openwebui.com/license.
         raise Exception(detail if detail else 'Open WebUI: Server Connection Error')
+    finally:
+        await cleanup_response(r)
 
 
-async def _transcribe_deepgram(request, file_path, languages, file_dir, id):
+
+
+async def _transcribe_deepgram(request, file_path, languages, file_dir, id, user=None):
     """Transcribe audio via the Deepgram listen API with language fallback."""
     content_type = mimetypes.guess_type(file_path)[0] or 'audio/wav'
 
@@ -987,14 +1007,15 @@ async def _transcribe_deepgram(request, file_path, languages, file_dir, id):
     try:
         session = await get_session()
         for lang in languages:
+            await cleanup_response(r)
             query: dict = {'smart_format': 'true'}
             if stt_model:
                 query['model'] = stt_model
             if lang:
                 query['language'] = lang
 
-            r = await session.post(
-                'https://api.deepgram.com/v1/listen',
+            r = await model_request(session, request, user, model_id=stt_model or 'deepgram', method='POST',
+                url='https://api.deepgram.com/v1/listen',
                 headers={'Authorization': f'Token {api_key}', 'Content-Type': content_type},
                 params=query,
                 data=audio_bytes,
@@ -1019,6 +1040,8 @@ async def _transcribe_deepgram(request, file_path, languages, file_dir, id):
             await f.write(JSONCodec.dumps(data))
         return data
 
+    except HTTPException:
+        raise
     except Exception as e:
         log.exception(e)
         # LICENSE covers this Open WebUI error identifier.
@@ -1040,9 +1063,13 @@ async def _transcribe_deepgram(request, file_path, languages, file_dir, id):
             except Exception:
                 detail = f'External: {e}'
         raise Exception(detail)
+    finally:
+        await cleanup_response(r)
 
 
-async def _transcribe_azure(request, file_path, filename, file_dir, id):
+
+
+async def _transcribe_azure(request, file_path, filename, file_dir, id, user=None):
     """Transcribe audio via Azure Cognitive Services batch transcription."""
     if not os.path.isfile(file_path):
         raise HTTPException(status_code=400, detail='Audio file not found')
@@ -1105,7 +1132,7 @@ async def _transcribe_azure(request, file_path, filename, file_dir, id):
                     yield chunk
 
         form_data.add_field('audio', audio_chunks(), filename=filename)
-        r = await session.post(
+        r = await model_request(session, request, user, model_id=await Config.get('audio.stt.model') or 'azure-speech-stt', method='POST',
             url=endpoint,
             data=form_data,
             headers={'Ocp-Apim-Subscription-Key': api_key},
@@ -1162,6 +1189,10 @@ async def _transcribe_azure(request, file_path, filename, file_dir, id):
             status_code=e.status if e.status else 500,
             detail=detail if detail else 'Open WebUI: Server Connection Error',
         )
+    finally:
+        await cleanup_response(r)
+
+
 
 
 async def transcription_handler(request, file_path, metadata, user=None):
@@ -1181,15 +1212,15 @@ async def transcription_handler(request, file_path, metadata, user=None):
     elif await Config.get('audio.stt.engine') == 'openai':
         return await _transcribe_openai(request, file_path, filename, languages, file_dir, id, user)
     elif await Config.get('audio.stt.engine') == 'deepgram':
-        return await _transcribe_deepgram(request, file_path, languages, file_dir, id)
+        return await _transcribe_deepgram(request, file_path, languages, file_dir, id, user)
     elif await Config.get('audio.stt.engine') == 'azure':
-        return await _transcribe_azure(request, file_path, filename, file_dir, id)
+        return await _transcribe_azure(request, file_path, filename, file_dir, id, user)
 
     elif await Config.get('audio.stt.engine') == 'mistral':
-        return await _transcribe_mistral(request, file_path, filename, metadata, file_dir, id)
+        return await _transcribe_mistral(request, file_path, filename, metadata, file_dir, id, user)
 
 
-async def _transcribe_mistral(request, file_path, filename, metadata, file_dir, id):
+async def _transcribe_mistral(request, file_path, filename, metadata, file_dir, id, user=None):
     """Transcribe audio via the Mistral STT API."""
     if not os.path.isfile(file_path):
         raise HTTPException(status_code=400, detail='Audio file not found')
@@ -1260,7 +1291,7 @@ async def _transcribe_mistral(request, file_path, filename, metadata, file_dir, 
                 ],
             }
 
-            r = await session.post(
+            r = await model_request(session, request, user, model_id=model, method='POST',
                 url=f'{api_base_url}/chat/completions',
                 json=payload,
                 headers={'Authorization': f'Bearer {api_key}', 'Content-Type': 'application/json'},
@@ -1293,7 +1324,7 @@ async def _transcribe_mistral(request, file_path, filename, metadata, file_dir, 
 
             form_data.add_field('file', audio_chunks(), filename=filename, content_type=mime_type)
 
-            r = await session.post(
+            r = await model_request(session, request, user, model_id=model, method='POST',
                 url=f'{api_base_url}/audio/transcriptions',
                 data=form_data,
                 headers={'Authorization': f'Bearer {api_key}'},
@@ -1335,6 +1366,10 @@ async def _transcribe_mistral(request, file_path, filename, metadata, file_dir, 
             status_code=e.status if e.status else 500,
             detail=detail if detail else 'Open WebUI: Server Connection Error',
         )
+    finally:
+        await cleanup_response(r)
+
+
 
 
 async def transcribe(request: Request, file_path: str, metadata: Optional[dict] = None, user=None):

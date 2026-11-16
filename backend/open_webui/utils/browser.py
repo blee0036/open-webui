@@ -24,7 +24,7 @@ def browser_ticket(server_id, user_id, chat_id, session, headers=None, cookies=N
     )
 
 
-async def browser_access(server_id, sid, ticket):
+async def browser_access(server_id, sid, ticket, request=None):
     data = decode_token(ticket)
     if (
         not data
@@ -36,6 +36,13 @@ async def browser_access(server_id, sid, ticket):
     user = await get_verified_user_by_id(data.get('user'))
     if user is None:
         raise HTTPException(401, 'Browser session expired')
+    if server_id == 'managed':
+        from open_webui.utils.auth import get_optional_verified_user_from_request
+        from open_webui.utils.sandboxes import workspace_scope
+        current = await get_optional_verified_user_from_request(request) if request is not None else None
+        if current is None or current.id != user.id:
+            raise HTTPException(403, 'Open this browser in its owner session')
+        await workspace_scope(current, {'chat_id': data.get('chat', '')})
     from open_webui.utils.oauth import decrypt_data
 
     data['relay'] = decrypt_data(data['relay'])

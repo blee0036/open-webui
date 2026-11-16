@@ -50,6 +50,7 @@ from open_webui.utils.payload import (
     apply_system_prompt_to_body,
 )
 from open_webui.utils.response import convert_responses_usage_to_chat_completions, get_responses_finish_reason
+from open_webui.utils.quota_transport import model_request
 from open_webui.utils.session_pool import (
     cleanup_response,
     get_client_timeout,
@@ -540,7 +541,7 @@ async def speech(request: Request, user=Depends(get_verified_user)):
         r = None
         try:
             session = await get_session()
-            r = await session.post(
+            r = await model_request(session, request, user, model_id=JSONCodec.loads(body).get('model', 'tts-1'), method='POST',
                 url=f'{url}/audio/speech',
                 data=body,
                 headers=headers,
@@ -560,6 +561,8 @@ async def speech(request: Request, user=Depends(get_verified_user)):
             # Return the saved file
             return FileResponse(file_path)
 
+        except HTTPException:
+            raise
         except Exception as e:
             log.exception(e)
 
@@ -579,6 +582,9 @@ async def speech(request: Request, user=Depends(get_verified_user)):
                 status_code=r.status if r else 500,
                 detail=detail if detail else 'Open WebUI: Server Connection Error',
             )
+
+        finally:
+            await cleanup_response(r)
 
     except ValueError:
         raise HTTPException(status_code=401, detail=ERROR_MESSAGES.OPENAI_NOT_FOUND)
@@ -1582,7 +1588,8 @@ async def generate_chat_completion(
     try:
         session = await get_session()
 
-        r = await session.request(
+        r = await model_request(
+            session, request, user,
             method='POST',
             url=request_url,
             data=payload,
@@ -1670,6 +1677,8 @@ async def generate_chat_completion(
                 response = convert_responses_result(response)
 
             return response
+    except HTTPException:
+        raise
     except Exception as e:
         log.exception(e)
 
@@ -1868,7 +1877,8 @@ async def responses(
             request_url = f'{url}/responses'
 
         session = await get_session()
-        r = await session.request(
+        r = await model_request(
+            session, request, user,
             method='POST',
             url=request_url,
             data=body,
@@ -1937,6 +1947,9 @@ async def proxy(path: str, request: Request, user=Depends(get_verified_user)):
             detail='Direct API passthrough is disabled. Set ENABLE_OPENAI_API_PASSTHROUGH=True to enable.',
         )
 
+    if user.role != 'admin' and await Config.get('team.enabled', False):
+        raise HTTPException(403, 'Use the managed model endpoints; arbitrary API passthrough is unavailable.')
+
     body = await request.body()
 
     # Parse JSON body to resolve model-based routing
@@ -1992,7 +2005,9 @@ async def proxy(path: str, request: Request, user=Depends(get_verified_user)):
             request_url = f'{url}/{path}'
 
         session = await get_session()
-        r = await session.request(
+        inference = request.method == 'POST' and path.strip('/') in {'completions', 'chat/completions', 'responses', 'messages', 'images/generations', 'images/edits', 'audio/speech', 'audio/transcriptions', 'audio/translations'}
+        send = model_request if inference else None
+        r = await (send(session, request, user, provider='anthropic' if path.strip('/') == 'messages' else 'openai', model_id=model_id,
             method=request.method,
             url=request_url,
             data=body,
@@ -2000,7 +2015,7 @@ async def proxy(path: str, request: Request, user=Depends(get_verified_user)):
             cookies=cookies,
             ssl=AIOHTTP_CLIENT_SESSION_SSL,
             timeout=get_client_timeout(stream=is_streaming_request),
-        )
+        ) if send else session.request(method=request.method, url=request_url, data=body, headers=headers, cookies=cookies, ssl=AIOHTTP_CLIENT_SESSION_SSL, timeout=get_client_timeout(stream=is_streaming_request)))
 
         # Check if response is SSE
         if 'text/event-stream' in r.headers.get('Content-Type', ''):

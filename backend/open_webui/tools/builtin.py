@@ -710,7 +710,44 @@ async def execute_code(
             code = blocking_code + '\n' + code
 
         engine = await Config.get('code_interpreter.engine', 'pyodide')
-        if engine == 'pyodide':
+        from open_webui.utils.sandboxes import sandbox_configured
+
+        terminal_id = (__metadata__ or {}).get('terminal_id')
+        # An explicit managed selection still fails loudly when the sandbox is missing;
+        # the implicit default falls back to the configured code_interpreter engine.
+        managed = await Config.get('team.enabled', False) and (
+            terminal_id == 'managed' or (terminal_id is None and await sandbox_configured())
+        )
+        if managed:
+            from open_webui.models.users import Users
+            from open_webui.utils.sandboxes import sandbox_execute_code
+
+            user = await Users.get_user_by_id((__user__ or {}).get('id'))
+            if not user:
+                raise ValueError('Authenticated workspace owner required')
+            metadata = {**(__metadata__ or {}), 'terminal_id': 'managed'}
+            # The file dicts are shared across tool-loop rounds of this request, and a
+            # successful upload records terminal_path on them: only copy what is missing.
+            pending_files = [
+                entry
+                for entry in metadata.get('files') or []
+                if isinstance(entry, dict)
+                and entry.get('id')
+                and entry.get('type') != 'filesystem'
+                and not entry.get('terminal_path')
+            ]
+            for entry in pending_files:
+                entry.pop('terminal_error', None)
+            await upload_files_to_terminal(
+                __request__,
+                user,
+                pending_files,
+                metadata,
+                {'__event_emitter__': __event_emitter__, '__event_call__': __event_call__},
+            )
+            output = await sandbox_execute_code(user, metadata, code)
+            stdout, stderr, result = output.get('stdout', ''), output.get('stderr', ''), output.get('result', '')
+        elif engine == 'pyodide':
             # Execute via frontend pyodide using bidirectional event call
             if __event_call__ is None:
                 return JSONCodec.dumps(
@@ -1638,6 +1675,7 @@ async def search_chats(
     __request__: Request = None,
     __user__: dict = None,
     __chat_id__: str = None,
+    __metadata__: dict = None,
 ) -> str:
     """
     Search the user's previous chat conversations by title and message content,
@@ -1667,6 +1705,7 @@ async def search_chats(
             include_archived=False,
             skip=0,
             limit=count * 3,  # Fetch more for filtering
+            project_id=(__metadata__ or {}).get('project_id'),
         )
 
         matched = []
@@ -1685,7 +1724,8 @@ async def search_chats(
             if len(matched) >= count:
                 break
 
-        snippets = await Chats.get_chat_search_snippets([chat.id for chat in matched], user_id, query)
+        snippets = await Chats.get_chat_search_snippets([chat.id for chat in matched], user_id, query,
+                                                       project_id=(__metadata__ or {}).get('project_id'))
         lower_query = chat_search_content_query(query)
         needles = list(dict.fromkeys([lower_query, *chat_search_terms(lower_query)])) if lower_query else []
         results = []
@@ -1714,6 +1754,7 @@ async def view_chat(
     chat_id: str,
     __request__: Request = None,
     __user__: dict = None,
+    __metadata__: dict = None,
 ) -> str:
     """
     Get the full conversation history of a chat by its ID after a relevant
@@ -1731,7 +1772,16 @@ async def view_chat(
     try:
         user_id = __user__.get('id')
 
-        chat = await Chats.get_chat_by_id_and_user_id(chat_id, user_id)
+        project_id = (__metadata__ or {}).get('project_id')
+        if project_id:
+            from open_webui.routers.projects import authorized_project
+            actor = UserModel(**__user__)
+            await authorized_project(project_id, actor)
+            chat = await Chats.get_accessible_chat_by_id(chat_id, actor)
+            if chat and chat.folder_id != project_id:
+                chat = None
+        else:
+            chat = await Chats.get_chat_by_id_and_user_id(chat_id, user_id)
 
         if not chat:
             return JSONCodec.dumps({'error': 'Chat not found or access denied'})
@@ -3916,7 +3966,7 @@ async def create_tool(
 ) -> str:
     """Create a private Python tool in the workspace.
     Source must define a Tools class with public methods, type hints, and descriptive docstrings.
-    Use Valves or UserValves for credentials; do not embed secrets. Saving executes the Python module on the server.
+    Use Valves or UserValves for credentials; do not embed secrets. Personal code is inspected and run in your isolated workspace when team workspaces are enabled.
 
     :param id: Unique lowercase Python identifier for the toolkit.
     :param name: Display name.

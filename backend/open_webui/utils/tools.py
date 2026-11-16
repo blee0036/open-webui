@@ -214,7 +214,10 @@ async def connect_mcp_server(
         return None
 
     mcp_server_connection = None
-    for server_connection in await Config.get('tool_server.connections', []):
+    from open_webui.utils.personal_connections import personal_mcp_connection
+    if server_id.startswith('personal-'):
+        mcp_server_connection = await personal_mcp_connection(server_id, user.id)
+    for server_connection in [] if mcp_server_connection else await Config.get('tool_server.connections', []):
         if server_connection.get('type', '') == 'mcp' and (server_connection.get('info') or {}).get('id') == server_id:
             mcp_server_connection = server_connection
             break
@@ -236,14 +239,18 @@ async def connect_mcp_server(
         return headers
 
     auth = OAuthTokenAuth(get_headers) if mcp_server_connection.get('auth_type') == 'system_oauth' else None
+    if mcp_server_connection.get('personal_owner_id'):
+        from open_webui.utils.personal_connections import PersonalMCPAuth
+        auth = PersonalMCPAuth(server_id, user, request)
     headers = {} if auth else await get_headers()
 
-    if mcp_server_connection.get('auth_type') in ('oauth_2.1', 'oauth_2.1_static') and not headers.get('Authorization'):
+    if not auth and mcp_server_connection.get('auth_type') in ('oauth_2.1', 'oauth_2.1_static') and not headers.get('Authorization'):
         raise HTTPException(status_code=401, detail='Auth required')
 
     client = MCPClient(
         event_caller=extra_params.get('__event_call__') if metadata.get('session_id') else None,
         server_name=server_id,
+        restricted=bool(mcp_server_connection.get('personal_owner_id')),
     )
     try:
         await client.connect(
@@ -404,6 +411,16 @@ async def get_tools(request: Request, tool_ids: list[str], user: UserModel, extr
                 )
             ):
                 log.warning(f'Access denied to tool {tool_id} for user {user.id}')
+                continue
+
+            from open_webui.utils.sandboxes import requires_sandbox, sandbox_tool_functions
+            if await requires_sandbox(tool):
+                sandbox_functions = await sandbox_tool_functions(tool, user, extra_params.get('__metadata__', {}))
+                for function_name, tool_dict in sandbox_functions.items():
+                    while function_name in tools_dict:
+                        function_name = f'{tool_id}_{function_name}'
+                    tool_dict['spec'] = {**tool_dict['spec'], 'name': function_name}
+                    tools_dict[function_name] = tool_dict
                 continue
 
             tools_cache = get_tools_cache(request)
@@ -599,7 +616,7 @@ def get_attached_knowledge(model: dict, metadata: dict) -> list[dict]:
     seen = set()
 
     for source, items in (
-        ('model', model_meta.get('knowledge') or []),
+        ('model', (model_meta.get('knowledge') or []) if not metadata.get('project_id') else []),
         ('folder', metadata.get('folder_knowledge') or []),
     ):
         for item in items:
@@ -756,7 +773,12 @@ async def get_builtin_tools(
     if is_builtin_tool_enabled('knowledge'):
         from open_webui.env import ENABLE_KB_EXEC
 
-        if ENABLE_KB_EXEC:
+        if metadata.get('project_id'):
+            # No global discovery fallback when a project has no published references.
+            if model_knowledge:
+                builtin_functions.extend([list_knowledge, search_knowledge_files, grep_knowledge_files,
+                                          query_knowledge_files, view_knowledge_file, display_file])
+        elif ENABLE_KB_EXEC:
             builtin_functions.append(kb_exec)
             builtin_functions.append(query_knowledge_files)
             builtin_functions.append(display_file)
@@ -1160,6 +1182,8 @@ def get_functions_from_tool(tool: object) -> list[Callable]:
 
 
 def get_tool_specs(tool_module: object) -> list[dict]:
+    if hasattr(tool_module, '_sandbox_specs'):
+        return tool_module._sandbox_specs
     function_models = map(convert_function_to_pydantic_model, get_functions_from_tool(tool_module))
 
     specs = [
@@ -1556,6 +1580,8 @@ async def get_terminal_tools(
     )
     if connection is None:
         raise RuntimeError(f"Terminal server '{terminal_id}' not found")
+    from open_webui.utils.sandboxes import bind_managed_connection
+    connection = await bind_managed_connection(connection, user, extra_params.get('__metadata__', {}))
     if not connection.get('enabled', True):
         raise RuntimeError(f"Terminal server '{terminal_id}' is disabled")
 
@@ -1566,7 +1592,8 @@ async def get_terminal_tools(
     # Find the cached spec data for this terminal
     if connection.get('owner_id') == user.id:
         url = connection['url']
-        openapi = await get_tool_server_data(url + '/openapi.json', {'X-User-Id': user.id})
+        openapi = await get_tool_server_data(url + '/openapi.json', {
+            'X-User-Id': user.id, **bearer_auth_header(connection.get('key', ''))})
         server_data = {
             'id': terminal_id,
             'url': url,
@@ -1587,6 +1614,8 @@ async def get_terminal_tools(
     auth_type = connection.get('auth_type', 'bearer')
     cookies = getattr(request, 'cookies', {}) if connection.get('forward_cookies', False) else {}
     headers = {'Content-Type': 'application/json', 'X-User-Id': user.id}
+    if connection.get('managed'):
+        headers['X-Agent-Execution'] = '1'
 
     if auth_type == 'bearer':
         headers.update(bearer_auth_header(connection.get('key', '')))

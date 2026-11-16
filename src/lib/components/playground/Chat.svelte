@@ -16,7 +16,7 @@
 	} from '$lib/constants';
 	import { baseModels, WEBUI_NAME, config, user, models, settings } from '$lib/stores';
 
-	import { chatCompletion } from '$lib/apis/openai';
+	import { chatCompletion, getErrorMessage } from '$lib/apis/openai';
 
 	import { splitStream, resolveDefaultModelIds } from '$lib/utils';
 	import Collapsible from '../common/Collapsible.svelte';
@@ -45,6 +45,7 @@
 	let selectedModelId = '';
 	let loading = false;
 	let stopResponseFlag = false;
+	let requestError = '';
 
 	let systemTextareaElement: HTMLTextAreaElement;
 	let messagesContainerElement: HTMLDivElement;
@@ -122,6 +123,9 @@
 			},
 			`${WEBUI_BASE_URL}/api`
 		);
+		if (!res?.ok) {
+			throw (await res?.json().catch(() => null)) ?? new Error($i18n.t('Server connection failed'));
+		}
 
 		let responseMessage;
 		if (messages.at(-1)?.role === 'assistant') {
@@ -166,12 +170,18 @@
 								let data = JSON.parse(line.replace(/^data: /, ''));
 								console.log(data);
 
-								if (responseMessage.content == '' && data.choices[0].delta.content == '\n') {
+								if (data.error) {
+									requestError = getErrorMessage(data);
+									stopResponseFlag = true;
+									break;
+								}
+								const content = data.choices?.[0]?.delta?.content ?? '';
+								if (responseMessage.content == '' && content == '\n') {
 									continue;
 								} else {
 									textareaElement.style.height = textareaElement.scrollHeight + 'px';
 
-									responseMessage.content += data.choices[0].delta.content ?? '';
+									responseMessage.content += content;
 									messages = messages;
 
 									textareaElement.style.height = textareaElement.scrollHeight + 'px';
@@ -205,13 +215,17 @@
 
 	const submitHandler = async () => {
 		if (selectedModelId) {
-			await addHandler();
-
 			loading = true;
-			await chatCompletionHandler();
-
-			loading = false;
-			stopResponseFlag = false;
+			requestError = '';
+			try {
+				await addHandler();
+				await chatCompletionHandler();
+			} catch (error) {
+				requestError = getErrorMessage(error, $i18n.t('Server connection failed'));
+			} finally {
+				loading = false;
+				stopResponseFlag = false;
+			}
 		}
 	};
 
@@ -304,7 +318,7 @@
 	};
 
 	onMount(async () => {
-		if ($user?.role !== 'admin') {
+		if ($user?.role !== 'admin' && !$user?.permissions?.features?.playground) {
 			await goto('/');
 		}
 
@@ -449,6 +463,14 @@
 			</div>
 
 			<div class="pb-3">
+				{#if requestError}
+					<p
+						role="alert"
+						class="mb-3 rounded-xl bg-amber-50 p-3 text-sm text-amber-900 dark:bg-amber-950 dark:text-amber-200"
+					>
+						{requestError}
+					</p>
+				{/if}
 				<div
 					class="border border-gray-100/30 dark:border-gray-850/30 w-full px-3 py-2.5 rounded-xl"
 				>
