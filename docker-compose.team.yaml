@@ -39,6 +39,9 @@ services:
       PGVECTOR_INITIALIZE_MAX_VECTOR_LENGTH: '1024'
       RAG_EMBEDDING_ENGINE: ''
       RAG_EMBEDDING_MODEL: BAAI/bge-m3
+      # bge-m3 is baked into the image. Auto-update would re-check HuggingFace on every
+      # start and pull the whole repo (ONNX export, ColBERT weights, images: several GB).
+      RAG_EMBEDDING_MODEL_AUTO_UPDATE: 'false'
       TEAM_WORKSPACE_MODE: 'true'
       ENABLE_OLLAMA_API: 'false'
       ENABLE_DIRECT_CONNECTIONS: 'false'
