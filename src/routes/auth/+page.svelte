@@ -41,6 +41,8 @@
 	// prefilled from /connect/<id>, /auth?connect=<id> or the last one used on this browser.
 	const ENTERPRISE_KEY = ENTERPRISE_LOGIN_KEY;
 	let enterpriseLogin = false;
+	// With enterprise login on, SSO is the default tab and email/password the second one.
+	let loginTab: 'enterprise' | 'account' = 'enterprise';
 	let enterprise = '';
 	let enterpriseError = '';
 	const loadEnterprises = async () => {
@@ -214,6 +216,10 @@
 	};
 
 	let onboarding = false;
+	$: hasAccountLogin =
+		$config?.features.enable_login_form || $config?.features.enable_ldap || !!form;
+	$: showLoginTabs = enterpriseLogin && !($config?.onboarding ?? false) && hasAccountLogin;
+	$: accountVisible = !showLoginTabs || loginTab === 'account';
 
 	onMount(async () => {
 		const redirectPath = $page.url.searchParams.get('redirect');
@@ -249,6 +255,7 @@
 		}
 		if (!logout) await oauthCallbackHandler();
 		form = $page.url.searchParams.get('form');
+		if (form) loginTab = 'account';
 		await loadEnterprises();
 
 		// Auto-redirect to SSO when OAUTH_AUTO_REDIRECT is enabled and the
@@ -392,7 +399,28 @@
 									{/if}
 								</div>
 
-								{#if $config?.features.enable_login_form || $config?.features.enable_ldap || form}
+								{#if showLoginTabs}
+									<div
+										class="mt-4 grid grid-cols-2 rounded-full bg-gray-100 p-1 text-sm dark:bg-gray-900"
+										role="tablist"
+									>
+										{#each [['enterprise', 'Enterprise SSO'], ['account', 'Email & password']] as item}
+											<button
+												type="button"
+												role="tab"
+												aria-selected={loginTab === item[0]}
+												class="rounded-full px-3 py-2 transition {loginTab === item[0]
+													? 'bg-white font-medium shadow-sm dark:bg-gray-800'
+													: 'text-gray-500'}"
+												on:click={() =>
+													(loginTab = item[0] === 'account' ? 'account' : 'enterprise')}
+												>{$i18n.t(item[1])}</button
+											>
+										{/each}
+									</div>
+								{/if}
+
+								{#if accountVisible && ($config?.features.enable_login_form || $config?.features.enable_ldap || form)}
 									<div class="flex flex-col mt-4">
 										{#if mode === 'signup'}
 											<div class="mb-2">
@@ -494,7 +522,7 @@
 									</div>
 								{/if}
 								<div class="mt-5">
-									{#if $config?.features.enable_login_form || $config?.features.enable_ldap || form}
+									{#if accountVisible && ($config?.features.enable_login_form || $config?.features.enable_ldap || form)}
 										{#if mode === 'ldap'}
 											<button
 												class="bg-gray-700/5 hover:bg-gray-700/10 dark:bg-gray-100/5 dark:hover:bg-gray-100/10 dark:text-gray-300 dark:hover:text-white transition w-full rounded-full font-normal text-[0.8125rem] leading-5 py-2.5 aria-disabled:opacity-50 flex justify-center"
@@ -556,8 +584,11 @@
 								</div>
 							</form>
 
-							{#if enterpriseLogin}
-								<form class="mt-5 space-y-3 text-left" on:submit|preventDefault={enterpriseSignIn}>
+							{#if enterpriseLogin && (!showLoginTabs || loginTab === 'enterprise')}
+								<form
+									class="{showLoginTabs ? 'mt-1' : 'mt-5'} space-y-3 text-left"
+									on:submit|preventDefault={enterpriseSignIn}
+								>
 									<label class="block text-sm" for="enterprise-login"
 										>{$i18n.t('Enterprise ID')}</label
 									>
@@ -584,7 +615,7 @@
 									on:click={loadEnterprises}>{enterpriseError} · {$i18n.t('Retry')}</button
 								>
 							{/if}
-							{#if Object.keys($config?.oauth?.providers ?? {}).length > 0}
+							{#if accountVisible && Object.keys($config?.oauth?.providers ?? {}).length > 0}
 								<div class="inline-flex items-center justify-center w-full">
 									<hr class="w-32 h-px my-4 border-0 dark:bg-gray-100/10 bg-gray-700/10" />
 									{#if $config?.features.enable_login_form || $config?.features.enable_ldap || form}
@@ -722,7 +753,7 @@
 								</div>
 							{/if}
 
-							{#if $config?.features.enable_ldap && $config?.features.enable_login_form}
+							{#if accountVisible && $config?.features.enable_ldap && $config?.features.enable_login_form}
 								<div class="mt-2">
 									<button
 										class="flex justify-center items-center text-xs w-full text-center underline"

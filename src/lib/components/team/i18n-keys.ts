@@ -84,6 +84,8 @@
 // t('Timed out')
 
 // Enterprise login and price sync
+// t('Enterprise SSO')
+// t('Email & password')
 // t('Enabled')
 // t('Disabled')
 // t('New-API official ratio preset')
