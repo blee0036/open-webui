@@ -301,11 +301,10 @@
 		>
 			<input
 				class="field min-w-48 flex-1"
-				required
 				maxlength="500"
 				bind:value={reason}
-				placeholder={$i18n.t('Reason')}
-				aria-label={$i18n.t('Reason')}
+				placeholder={$i18n.t('Note (optional)')}
+				aria-label={$i18n.t('Note (optional)')}
 			/>
 			<button class="primary" disabled={busy || !selectedCount}
 				>{$i18n.t('Apply {{count}} selected prices', { count: selectedCount })}</button

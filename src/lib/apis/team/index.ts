@@ -66,6 +66,25 @@ export const saveTeam = (path: string, data: unknown, method = 'PUT') =>
 	teamRequest(path, { method, body: JSON.stringify(data) });
 export const getMyQuota = () => teamRequest<QuotaSummary>('/team/quota/me');
 export const quotaNumber = (value: number | undefined) => (value ?? 0).toLocaleString();
+
+// Credit plans are stored in micro-USD (1 USD = 1,000,000 credits, as quota_pricing.py
+// charges); every screen shows and accepts them as dollars instead.
+export const CREDITS_PER_USD = 1_000_000;
+export const quotaAmount = (value: number | undefined, unit?: string, precise = false) =>
+	unit === 'credits'
+		? '$' +
+			((value ?? 0) / CREDITS_PER_USD).toLocaleString(undefined, {
+				minimumFractionDigits: 2,
+				maximumFractionDigits: precise ? 6 : 2
+			})
+		: quotaNumber(value);
+export const quotaInput = (value: number | undefined, unit?: string) =>
+	unit === 'credits' ? (value ?? 0) / CREDITS_PER_USD : (value ?? 0);
+export const quotaStored = (input: number | string, unit?: string) =>
+	Math.round(Number(input) * (unit === 'credits' ? CREDITS_PER_USD : 1));
+// Ledger entries carry a frozen price snapshot only when they were charged in credits.
+export const entryUnit = (entry: { pricing?: unknown }) =>
+	entry?.pricing ? 'credits' : 'requests';
 export const quotaDate = (value: number | null | undefined) =>
 	value ? new Date(value * 1000).toLocaleString() : '—';
 

@@ -20,7 +20,8 @@ router = APIRouter()
 
 
 class AdjustmentForm(BaseModel):
-    reason: str = Field(min_length=1, max_length=500)
+    # Optional note for the adjustment history, which already records who changed what.
+    reason: str = Field(default='', max_length=500)
 
     @field_validator('reason', mode='before')
     @classmethod
@@ -54,7 +55,6 @@ class SettingsForm(AdjustmentForm):
     quota_enabled: bool
     default_plan_id: str | None = None
     default_effective_at: int | None = None
-    reason: str = Field(default='Default package configuration', min_length=1, max_length=500)
 
 
 @router.get('/admin/settings')
@@ -235,7 +235,6 @@ async def update_plan(plan_id: str, form: PlanForm, user=Depends(get_admin_user)
 class AssignmentForm(AdjustmentForm):
     plan_id: str | None = None
     effective_at: int | None = None
-    reason: str = Field(default='Package assignment', min_length=1, max_length=500)
 
 
 class BonusForm(AdjustmentForm):

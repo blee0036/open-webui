@@ -36,6 +36,10 @@ LABEL = {'app': 'open-webui-managed-sandbox', 'owner': NAMESPACE}
 # without memory overcommit. Lower it on smaller hosts (about 2 GiB of free RAM per sandbox).
 MAX_RUNNING = int(os.environ.get('SANDBOX_MAX_RUNNING', '10'))
 IDLE = int(os.environ.get('SANDBOX_IDLE_SECONDS', '600'))
+# open-terminal's built-in Chromium (browser tools for the model + Browser tab in the UI).
+# Off by default: workspaces are offline unless a member enables public access.
+BROWSER = os.environ.get('SANDBOX_ENABLE_BROWSER', 'false').strip().lower() == 'true'
+BROWSER_ENV = 'OPEN_TERMINAL_ENABLE_BROWSER=' + ('true' if BROWSER else 'false')
 TIMEOUT = int(os.environ.get('SANDBOX_EXECUTION_SECONDS', '120'))
 MONITOR_SECONDS = float(os.environ.get('SANDBOX_MONITOR_SECONDS', '20'))
 state_dir = Path(os.environ.get('SANDBOX_STATE_DIR', '/state'))
@@ -203,6 +207,10 @@ def configure_firewall(api, row, runtime, network):
     return runtime.attrs['NetworkSettings']['Networks'][network.name]['IPAddress']
 
 
+def runtime_matches_settings(runtime):
+    return BROWSER_ENV in ((runtime.attrs.get('Config') or {}).get('Env') or [])
+
+
 def start_runtime(row):
     with client() as api:
         network_name = name(row)
@@ -221,6 +229,10 @@ def start_runtime(row):
                 egress.reload()
             proxy_url = 'http://' + egress.attrs['NetworkSettings']['Networks'][network_name]['IPAddress'] + ':3128'
         runtime = container_for(api, row)
+        if runtime is not None and runtime.status != 'running' and not runtime_matches_settings(runtime):
+            # Settings are baked into the container at creation; apply changes on the next start.
+            runtime.remove()  # The home volume is kept.
+            runtime = None
         if runtime is None:
             ensure_image(api, IMAGE)
             ensure_image(api, HELPER_IMAGE)
@@ -248,6 +260,7 @@ def start_runtime(row):
                 shm_size='256m',
                 environment={
                     'OPEN_TERMINAL_API_KEY': row['api_key'],
+                    'OPEN_TERMINAL_ENABLE_BROWSER': 'true' if BROWSER else 'false',
                     'HTTP_PROXY': proxy_url,
                     'HTTPS_PROXY': proxy_url,
                     'http_proxy': proxy_url,

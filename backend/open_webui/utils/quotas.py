@@ -1,10 +1,13 @@
 """Transactional quota accounting; no database transaction spans an upstream request."""
 
+import asyncio
+import logging
 import time
 import uuid
 from contextlib import asynccontextmanager
 
 from fastapi import HTTPException
+from open_webui.env import QUOTA_ENTRY_RETENTION_DAYS
 from open_webui.internal.db import get_async_db
 from open_webui.models.config import Config
 from open_webui.models.team import ModelPrice, QuotaAccount, QuotaAudit, QuotaEntry, QuotaPeriod, QuotaPlan
@@ -17,9 +20,11 @@ from open_webui.utils.quota_pricing import (
     price_usage,
     request_snapshot,
 )
-from sqlalchemy import update
+from sqlalchemy import case, delete, func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+
+log = logging.getLogger(__name__)
 
 
 def record(row):
@@ -387,3 +392,49 @@ async def settle(entry, usage=None, detail=None, *, override_charge=None, actor_
                     created_at=row.settled_at,
                 )
             )
+
+
+async def purge_old_entries(now=None, days=None):
+    """Delete request-history rows older than the retention window, whatever their state.
+
+    Balances live on quota_period, so settled/released rows can go without touching them.
+    A row still holding a reservation (reserved, or pending reconciliation) gives that
+    amount back to its period first, so an abandoned request cannot pin quota forever.
+    """
+    days = QUOTA_ENTRY_RETENTION_DAYS if days is None else days
+    if days <= 0:
+        return 0
+    cutoff = int(now if now is not None else time.time()) - days * 86400
+    async with get_async_db() as db:
+        async with db.begin():
+            held = (
+                await db.execute(
+                    select(QuotaEntry.period_id, func.sum(QuotaEntry.reserved))
+                    .where(QuotaEntry.created_at < cutoff, QuotaEntry.state.in_(('reserved', 'pending')))
+                    .group_by(QuotaEntry.period_id)
+                )
+            ).all()
+            for period_id, amount in held:
+                await db.execute(
+                    update(QuotaPeriod)
+                    .where(QuotaPeriod.id == period_id)
+                    .values(
+                        reserved=case(
+                            (QuotaPeriod.reserved > amount, QuotaPeriod.reserved - amount),
+                            else_=0,
+                        )
+                    )
+                )
+            result = await db.execute(delete(QuotaEntry).where(QuotaEntry.created_at < cutoff))
+    return result.rowcount or 0
+
+
+async def periodic_quota_entry_purge(interval=6 * 3600):
+    while True:
+        try:
+            removed = await purge_old_entries()
+            if removed:
+                log.info('Removed %d request-history rows older than %d days', removed, QUOTA_ENTRY_RETENTION_DAYS)
+        except Exception:
+            log.exception('Request-history cleanup failed')
+        await asyncio.sleep(interval)

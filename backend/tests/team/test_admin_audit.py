@@ -8,16 +8,15 @@ from pydantic import ValidationError
 from sqlalchemy import select
 
 
-def test_configuration_adjustments_require_nonblank_reasons():
+def test_configuration_adjustment_notes_are_optional_and_bounded():
     for form, values in [
         (PlanForm, {'name': 'Standard', 'unit': 'requests', 'allowance': 1000}),
         (PriceForm, {'expression': 'p*3+c*15'}),
     ]:
+        assert form(**values).reason == ''
+        assert form(**values, reason='  \t\n').reason == ''
         with pytest.raises(ValidationError):
-            form(**values)
-        for reason in ['', '  \t\n']:
-            with pytest.raises(ValidationError):
-                form(**values, reason=reason)
+            form(**values, reason='x' * 501)
 
 
 @pytest.mark.asyncio

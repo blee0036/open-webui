@@ -627,9 +627,53 @@ async def test_project_save_detects_stale_editor_and_keeps_published_files(monke
     assert forced['data']['system_prompt'] == 'editor' and forced['data']['files'][0]['id'] == 'f'
     async with get_async_db() as db:
         logs = (
-            await db.execute(
-                select(QuotaAudit).where(QuotaAudit.action == 'project_context_update').order_by(QuotaAudit.created_at)
+            (
+                await db.execute(
+                    select(QuotaAudit)
+                    .where(QuotaAudit.action == 'project_context_update')
+                    .order_by(QuotaAudit.created_at)
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
     assert [log.data['overwrote_newer'] for log in logs] == [False, True]
     assert logs[-1].data['changes']['system_prompt'] == {'from': 'owner', 'to': 'editor'}
+
+
+@pytest.mark.asyncio
+async def test_team_mode_publishes_new_connection_models_once(monkeypatch):
+    from open_webui.models.models import Models
+    from open_webui.utils import models as model_utils
+    from open_webui.utils.access_control import check_model_access
+
+    admin = await member('first-admin', role='admin')
+    user = await member('plain-member')
+    found = [
+        {'id': 'gpt-x', 'name': 'GPT X', 'owned_by': 'openai'},
+        {'id': 'my-pipe', 'name': 'Pipe', 'owned_by': 'openai', 'pipe': {'type': 'pipe'}},
+        {'id': 'arena-model', 'name': 'Arena', 'owned_by': 'arena', 'arena': True},
+        {'id': 'bad id', 'name': 'Bad', 'owned_by': 'openai'},
+    ]
+
+    # Upstream behaviour outside team mode: nothing is written.
+    assert not await model_utils.publish_new_base_models(found, await Models.get_all_models())
+    await Config.upsert({'team.enabled': True})
+    assert await model_utils.publish_new_base_models(found, await Models.get_all_models())
+
+    rows = {row.id: row for row in await Models.get_all_models()}
+    assert set(rows) == {'gpt-x'}
+    assert rows['gpt-x'].user_id == admin.id and rows['gpt-x'].name == 'GPT X'
+    assert rows['gpt-x'].meta.model_dump().get('defaultFeatureIds') == ['web_search']
+    await check_model_access(user, rows['gpt-x'])
+
+    # The admin's later choice (private here) is kept; the row is never rewritten.
+    await AccessGrants.set_access_grants('model', 'gpt-x', [])
+    assert not await model_utils.publish_new_base_models(found, await Models.get_all_models())
+    with pytest.raises(HTTPException):
+        await check_model_access(user, await Models.get_model_by_id('gpt-x'))
+
+    monkeypatch.setattr(model_utils, 'TEAM_PUBLIC_BASE_MODELS', False)
+    assert not await model_utils.publish_new_base_models(
+        [{'id': 'gpt-y', 'owned_by': 'openai'}], await Models.get_all_models()
+    )

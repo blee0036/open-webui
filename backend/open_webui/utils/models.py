@@ -8,15 +8,21 @@ from open_webui.config import (
     BYPASS_ADMIN_ACCESS_CONTROL,
     DEFAULT_ARENA_MODEL,
 )
-from open_webui.env import BYPASS_MODEL_ACCESS_CONTROL, ENABLE_FUNCTIONS, GLOBAL_LOG_LEVEL, REDIS_KEY_PREFIX
+from open_webui.env import (
+    BYPASS_MODEL_ACCESS_CONTROL,
+    ENABLE_FUNCTIONS,
+    GLOBAL_LOG_LEVEL,
+    REDIS_KEY_PREFIX,
+    TEAM_PUBLIC_BASE_MODELS,
+)
 from open_webui.events import EVENTS, publish_event
 from open_webui.functions import get_function_models
 from open_webui.models.access_grants import AccessGrants
 from open_webui.models.config import Config
 from open_webui.models.functions import Functions
 from open_webui.models.groups import Groups
-from open_webui.models.models import Models
-from open_webui.models.users import UserModel
+from open_webui.models.models import ModelForm, ModelMeta, ModelParams, Models
+from open_webui.models.users import UserModel, Users
 from open_webui.routers import ollama, openai
 from open_webui.socket.utils import RedisDict
 from open_webui.utils.access_control import has_access, has_base_model_access
@@ -26,11 +32,13 @@ from open_webui.utils.plugin import (
     get_function_module_from_cache,
     get_functions_cache,
 )
+from pydantic import ValidationError
 
 logging.basicConfig(stream=sys.stdout, level=GLOBAL_LOG_LEVEL)
 log = logging.getLogger(__name__)
 
 BASE_MODELS_CACHE_KEY = f'{REDIS_KEY_PREFIX}:models:base'
+_UNPUBLISHABLE_MODEL_IDS: set[str] = set()
 
 
 def public_model_params(params):
@@ -116,6 +124,62 @@ async def publish_model_availability_events(request: Request, base_models: list[
             source='system',
             data={'name': previous_models[model_id]},
         )
+
+
+async def publish_new_base_models(models: list[dict], custom_models: list) -> bool:
+    """Team mode: register every newly discovered connection model readable by all signed-in users.
+
+    Upstream keeps a base model admin-only until someone opens its access settings.
+    For a team workspace that is one manual step per model, so instead a model that
+    has no configuration row yet gets one with a public read grant. Only missing rows
+    are written: once the row exists, the admin's access settings (private, groups,
+    disabled) are left alone. Deleting the row republishes the model on the next refresh.
+    New rows also turn web search on by default for new chats (the model decides when to search).
+    """
+    if not TEAM_PUBLIC_BASE_MODELS or not await Config.get('team.enabled'):
+        return False
+    configured = {model.id for model in custom_models}
+    # Connection models only: admin-installed pipe functions keep their own access settings.
+    missing = [
+        model
+        for model in models
+        if model.get('id')
+        and not model.get('arena')
+        and not model.get('pipe')
+        and model.get('owned_by') in ('openai', 'ollama')
+        and model['id'] not in configured
+        and model['id'] not in _UNPUBLISHABLE_MODEL_IDS
+    ]
+    if not missing:
+        return False
+    owner = await Users.get_super_admin_user()
+    if owner is None:
+        return False
+    created = 0
+    for model in missing:
+        try:
+            await Models.insert_new_model(
+                ModelForm(
+                    id=model['id'],
+                    name=model.get('name') or model['id'],
+                    # Web search on by default for new chats; members can still switch it off per chat.
+                    meta=ModelMeta(defaultFeatureIds=['web_search']),
+                    params=ModelParams(),
+                    access_grants=[{'principal_type': 'user', 'principal_id': '*', 'permission': 'read'}],
+                    commit_message='Published to all users (team workspace)',
+                ),
+                owner.id,
+            )
+            created += 1
+        except ValidationError:
+            # IDs the model form rejects (whitespace, agent:) stay admin-only; don't retry them.
+            _UNPUBLISHABLE_MODEL_IDS.add(model['id'])
+        except Exception as e:
+            # Usually a concurrent refresh inserted it first; the next refresh retries otherwise.
+            log.debug('Could not publish base model %s: %s', model['id'], e)
+    if created:
+        log.info('Published %d new base model(s) to all users', created)
+    return created > 0
 
 
 async def get_all_models(request, refresh: bool = False, user: UserModel = None):
@@ -219,6 +283,8 @@ async def get_all_models(request, refresh: bool = False, user: UserModel = None)
         enabled_filter_ids = set()
 
     custom_models = await Models.get_all_models()
+    if await publish_new_base_models(models, custom_models):
+        custom_models = await Models.get_all_models()
 
     # Single O(1) lookup: Ollama base names first, then exact IDs (exact wins).
     base_model_lookup = {}

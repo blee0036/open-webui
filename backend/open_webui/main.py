@@ -453,6 +453,10 @@ async def lifespan(app: FastAPI):
     app.state.periodic_usage_pool_cleanup = asyncio.create_task(periodic_usage_pool_cleanup())
     app.state.periodic_session_pool_cleanup = asyncio.create_task(periodic_session_pool_cleanup())
 
+    from open_webui.utils.quotas import periodic_quota_entry_purge
+
+    app.state.periodic_quota_entry_purge = asyncio.create_task(periodic_quota_entry_purge())
+
     from open_webui.utils.automations import scheduler_worker_loop
 
     app.state.scheduler_worker_loop = asyncio.create_task(scheduler_worker_loop(app))
@@ -548,6 +552,7 @@ async def lifespan(app: FastAPI):
     app.state.periodic_socket_authentication.cancel()
     app.state.periodic_usage_pool_cleanup.cancel()
     app.state.periodic_session_pool_cleanup.cancel()
+    app.state.periodic_quota_entry_purge.cancel()
     app.state.scheduler_worker_loop.cancel()
 
     await publish_event(request, EVENTS.SYSTEM_SHUTDOWN_COMPLETED, source='system')

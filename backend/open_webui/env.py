@@ -840,6 +840,14 @@ PASSWORD_VALIDATION_HINT = os.getenv('PASSWORD_VALIDATION_HINT', '')
 
 
 BYPASS_MODEL_ACCESS_CONTROL = os.getenv('BYPASS_MODEL_ACCESS_CONTROL', 'False').lower() == 'true'
+# Team workspace mode only: newly discovered connection models start readable by every
+# signed-in user (an ordinary, editable public grant) instead of admin-only.
+TEAM_PUBLIC_BASE_MODELS = os.getenv('TEAM_PUBLIC_BASE_MODELS', 'True').lower() == 'true'
+# Days of per-request quota history to keep (all states); balances are unaffected. 0 keeps everything.
+try:
+    QUOTA_ENTRY_RETENTION_DAYS = max(0, int(os.getenv('QUOTA_ENTRY_RETENTION_DAYS', '90')))
+except ValueError:
+    QUOTA_ENTRY_RETENTION_DAYS = 90
 BYPASS_RETRIEVAL_ACCESS_CONTROL = os.getenv('BYPASS_RETRIEVAL_ACCESS_CONTROL', 'False').lower() == 'true'
 
 # When True, collection names that do not match any known file-*, user-memory-*,

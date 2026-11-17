@@ -33,7 +33,13 @@
 
 // Quota page and badge
 // t('requests left')
-// t('credits left')
+// t('available')
+// t('Base allowance')
+// t('Base allowance (USD)')
+// t('Add quota for this period only')
+// t('Add quota for this period only (USD)')
+// t('Actual charge')
+// t('Actual charge (USD)')
 // t('Personal package')
 // t('Temporary bonus')
 // t('Settled usage')

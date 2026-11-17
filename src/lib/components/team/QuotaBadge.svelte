@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { getContext, onMount } from 'svelte';
-	import { getMyQuota, quotaNumber, quotaDate, type QuotaSummary } from '$lib/apis/team';
+	import { getMyQuota, quotaAmount, quotaDate, type QuotaSummary } from '$lib/apis/team';
 	const i18n = getContext<any>('i18n');
 	let quota: QuotaSummary | null = null;
 	let error = '';
@@ -44,8 +44,8 @@
 		<div class="flex items-center justify-between gap-2 text-xs">
 			<span class="truncate font-medium">{quota.plan?.name}</span>
 			<span class:text-amber-700={low} class:dark:text-amber-300={low}>
-				{quotaNumber(quota.available)}
-				{$i18n.t(quota.plan?.unit === 'requests' ? 'requests left' : 'credits left')}
+				{quotaAmount(quota.available, quota.plan?.unit)}
+				{$i18n.t(quota.plan?.unit === 'requests' ? 'requests left' : 'available')}
 			</span>
 		</div>
 		<div class="my-2 h-1 overflow-hidden rounded-full bg-black/10 dark:bg-white/10">

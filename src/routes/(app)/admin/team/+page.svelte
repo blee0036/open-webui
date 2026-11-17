@@ -1,7 +1,17 @@
 <script lang="ts">
 	import { getContext, onMount } from 'svelte';
 	import { toast } from 'svelte-sonner';
-	import { teamRequest, saveTeam, quotaDate, quotaNumber, type QuotaPlan } from '$lib/apis/team';
+	import {
+		teamRequest,
+		saveTeam,
+		quotaDate,
+		quotaAmount,
+		quotaInput,
+		quotaStored,
+		entryUnit,
+		CREDITS_PER_USD,
+		type QuotaPlan
+	} from '$lib/apis/team';
 	import EnterpriseAdmin from '$lib/components/team/EnterpriseAdmin.svelte';
 	import PriceSync from '$lib/components/team/PriceSync.svelte';
 	import { getBackendConfig } from '$lib/apis';
@@ -15,7 +25,6 @@
 	let reason = '';
 	let effective = '';
 	let editorId = '';
-	let planReason = '';
 	const blankPlan = () => ({
 		name: '',
 		unit: 'requests',
@@ -85,7 +94,7 @@
 		if (bonusOperation?.key !== key) bonusOperation = { key, id: crypto.randomUUID() };
 		await saveTeam(
 			`/team/admin/users/${selectedUser.id}/bonus`,
-			{ amount: bonus, reason, operation_id: bonusOperation.id },
+			{ amount: quotaStored(bonus, userQuota.plan?.unit), reason, operation_id: bonusOperation.id },
 			'POST'
 		);
 		bonusOperation = null;
@@ -132,8 +141,7 @@
 								default_plan_id: settings.default_plan_id || null,
 								default_effective_at: effective
 									? Math.floor(new Date(effective).getTime() / 1000)
-									: null,
-								reason
+									: null
 							});
 							await load();
 							config.set(await getBackendConfig(localStorage.token));
@@ -153,7 +161,8 @@
 							bind:value={settings.default_plan_id}
 							><option value="">{$i18n.t('Select a package')}</option
 							>{#each plans.filter((p) => !p.archived) as plan}<option value={plan.id}
-									>{plan.name} · {quotaNumber(plan.allowance)} {$i18n.t(plan.unit)}</option
+									>{plan.name} · {quotaAmount(plan.allowance, plan.unit)}
+									{plan.unit === 'requests' ? $i18n.t('requests') : ''}</option
 								>{/each}</select
 						></label
 					>
@@ -163,9 +172,6 @@
 							type="datetime-local"
 							bind:value={effective}
 						/></label
-					>
-					<label class="block text-sm"
-						>{$i18n.t('Reason')}<input class="field mt-2" bind:value={reason} required /></label
 					>
 					<button class="primary" disabled={busy}>{$i18n.t('Save configuration')}</button>
 				</form>
@@ -180,13 +186,14 @@
 							on:click={() => {
 								editorId = plan.id;
 								editor = structuredClone(plan);
-								planReason = '';
 							}}
 							><span class="font-medium"
 								>{plan.name}{plan.archived ? ' · ' + $i18n.t('Archived') : ''}</span
 							><span
-								>{quotaNumber(plan.allowance)}
-								{$i18n.t(plan.unit)} · {$i18n.t(plan.reset.kind)}</span
+								>{quotaAmount(plan.allowance, plan.unit)}
+								{plan.unit === 'requests' ? $i18n.t('requests') : ''} · {$i18n.t(
+									plan.reset.kind
+								)}</span
 							></button
 						>{/each}
 				</div>
@@ -199,7 +206,6 @@
 							on:click={() => {
 								editorId = '';
 								editor = blankPlan();
-								planReason = '';
 							}}>{$i18n.t('New package')}</button
 						>{/if}
 				</div>
@@ -210,11 +216,10 @@
 							const { id, created_at, updated_at, ...form } = editor;
 							await saveTeam(
 								`/team/admin/plans${editorId ? '/' + editorId : ''}`,
-								{ ...form, reason: planReason },
+								form,
 								editorId ? 'PUT' : 'POST'
 							);
 							await load();
-							planReason = '';
 						})}
 				>
 					<label class="block text-sm"
@@ -230,19 +235,24 @@
 							>{$i18n.t('Metering')}<select
 								class="field mt-2"
 								bind:value={editor.unit}
+								on:change={() =>
+									(editor.allowance = editor.unit === 'credits' ? 10 * CREDITS_PER_USD : 1000)}
 								disabled={!!editorId}
 								><option value="requests">{$i18n.t('API requests')}</option><option value="credits"
 									>{$i18n.t('Token credits')}</option
 								></select
 							></label
 						><label class="text-sm"
-							>{$i18n.t('Base allowance')}<input
+							>{$i18n.t(
+								editor.unit === 'credits' ? 'Base allowance (USD)' : 'Base allowance'
+							)}<input
 								class="field mt-2"
 								type="number"
 								min="0"
-								max="9007199254740991"
-								step="1"
-								bind:value={editor.allowance}
+								step={editor.unit === 'credits' ? '0.01' : '1'}
+								value={quotaInput(editor.allowance, editor.unit)}
+								on:input={(e) =>
+									(editor.allowance = quotaStored(e.currentTarget.value || 0, editor.unit))}
 								required
 							/></label
 						>
@@ -280,14 +290,6 @@
 					{#if editorId}<label class="flex items-center gap-3 text-sm"
 							><input type="checkbox" bind:checked={editor.archived} />{$i18n.t('Archived')}</label
 						>{/if}
-					<label class="block text-sm"
-						>{$i18n.t('Reason')}<input
-							class="field mt-2"
-							required
-							maxlength="500"
-							bind:value={planReason}
-						/></label
-					>
 					<button class="primary" disabled={busy}>{$i18n.t('Save package')}</button>
 				</form>
 			</section>
@@ -315,7 +317,7 @@
 			{#if selectedUser && userQuota}<section class="space-y-5">
 					<h2 class="text-lg font-medium">{selectedUser.name}</h2>
 					<p class="text-sm">
-						{userQuota.plan?.name ?? '—'} · {quotaNumber(userQuota.available)}
+						{userQuota.plan?.name ?? '—'} · {quotaAmount(userQuota.available, userQuota.plan?.unit)}
 						{$i18n.t('available')} · {quotaDate(userQuota.period?.ends_at)}
 					</p>
 					{#if userQuota.pending_plan}<p class="text-sm text-amber-700 dark:text-amber-300">
@@ -351,7 +353,11 @@
 							/></label
 						>
 						<label class="block text-sm"
-							>{$i18n.t('Reason')}<input class="field mt-2" required bind:value={reason} /></label
+							>{$i18n.t('Note (optional)')}<input
+								class="field mt-2"
+								maxlength="500"
+								bind:value={reason}
+							/></label
 						><button class="primary" disabled={busy}>{$i18n.t('Assign package')}</button>
 					</form>
 					<form
@@ -359,16 +365,24 @@
 						on:submit|preventDefault={() => action(addBonus)}
 					>
 						<label class="block text-sm"
-							>{$i18n.t('Add quota for this period only')}<input
+							>{$i18n.t(
+								userQuota.plan?.unit === 'credits'
+									? 'Add quota for this period only (USD)'
+									: 'Add quota for this period only'
+							)}<input
 								class="field mt-2"
 								type="number"
-								min="1"
-								step="1"
+								min={userQuota.plan?.unit === 'credits' ? '0.01' : '1'}
+								step={userQuota.plan?.unit === 'credits' ? '0.01' : '1'}
 								required
 								bind:value={bonus}
 							/></label
 						><label class="block text-sm"
-							>{$i18n.t('Reason')}<input class="field mt-2" required bind:value={reason} /></label
+							>{$i18n.t('Note (optional)')}<input
+								class="field mt-2"
+								maxlength="500"
+								bind:value={reason}
+							/></label
 						><button class="primary" disabled={busy}>{$i18n.t('Add temporary quota')}</button>
 					</form>
 				</section>{/if}
@@ -431,9 +445,8 @@
 						bind:value={price.multiplier}
 					/></label
 				><label class="block text-sm"
-					>{$i18n.t('Reason')}<input
+					>{$i18n.t('Note (optional)')}<input
 						class="field mt-2"
-						required
 						maxlength="500"
 						bind:value={priceReason}
 					/></label
@@ -461,7 +474,7 @@
 					action(async () => {
 						await saveTeam(
 							`/team/admin/entries/${entry.id}/reconcile`,
-							{ charge: charges[entry.id], reason },
+							{ charge: quotaStored(charges[entry.id], entryUnit(entry)), reason },
 							'POST'
 						);
 						await load();
@@ -469,7 +482,11 @@
 			>
 				<div class="flex flex-wrap justify-between gap-2 text-sm">
 					<strong>{entry.model_id}</strong><span
-						>{quotaDate(entry.created_at)} · {$i18n.t('Reserved usage')}: {entry.reserved}</span
+						>{quotaDate(entry.created_at)} · {$i18n.t('Reserved usage')}: {quotaAmount(
+							entry.reserved,
+							entryUnit(entry),
+							true
+						)}</span
 					>
 				</div>
 				<p class="break-all text-xs text-gray-500">{entry.user_id} · {entry.detail}</p>
@@ -478,16 +495,21 @@
 						class="field max-w-40"
 						type="number"
 						min="0"
+						step={entryUnit(entry) === 'credits' ? 'any' : '1'}
 						required
 						bind:value={charges[entry.id]}
-						aria-label={$i18n.t('Actual charge')}
-						placeholder={$i18n.t('Actual charge')}
+						aria-label={$i18n.t(
+							entryUnit(entry) === 'credits' ? 'Actual charge (USD)' : 'Actual charge'
+						)}
+						placeholder={$i18n.t(
+							entryUnit(entry) === 'credits' ? 'Actual charge (USD)' : 'Actual charge'
+						)}
 					/><input
 						class="field flex-1"
-						required
+						maxlength="500"
 						bind:value={reason}
-						aria-label={$i18n.t('Reason')}
-						placeholder={$i18n.t('Reason')}
+						aria-label={$i18n.t('Note (optional)')}
+						placeholder={$i18n.t('Note (optional)')}
 					/><button class="primary" disabled={busy}>{$i18n.t('Reconcile')}</button>
 				</div>
 			</form>{/each}

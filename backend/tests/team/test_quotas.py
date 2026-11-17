@@ -253,7 +253,15 @@ async def test_scheduled_fixed_interval_uses_effective_time_not_first_visit():
 async def test_per_call_price_settles_without_usage_and_per_unit():
     await setup(10**9, 'credits')
     async with get_async_db() as db:
-        db.add(ModelPrice(model_id='sd-checkpoint', expression='tier("image", fixed(0.01)) * image_count', multiplier='1', revision=1, updated_at=0))
+        db.add(
+            ModelPrice(
+                model_id='sd-checkpoint',
+                expression='tier("image", fixed(0.01)) * image_count',
+                multiplier='1',
+                revision=1,
+                updated_at=0,
+            )
+        )
         db.add(ModelPrice(model_id='chat', expression='p+c', multiplier='1', revision=1, updated_at=0))
         await db.commit()
     entry = await quotas.reserve('user', 'sd-checkpoint', {}, image_count=3)
@@ -290,3 +298,38 @@ async def test_mark_sent_persists_without_account_lock_and_ignores_settled_entri
     await quotas.mark_sent(entry)  # late trace callback after settlement is a no-op
     async with get_async_db() as db:
         assert (await db.get(quotas.QuotaEntry, entry['id'])).state == 'settled'
+
+
+@pytest.mark.asyncio
+async def test_old_request_history_is_purged_and_held_reservations_returned():
+    from open_webui.models.team import QuotaEntry
+    from sqlalchemy import select, update
+
+    await setup(10)
+    old = [await quotas.reserve('member', 'model', {}) for _ in range(4)]
+    await quotas.settle(old[0])  # never sent: released
+    await quotas.mark_sent(old[1])
+    await quotas.settle(old[1])  # settled, charged 1
+    # old[2] stays reserved; old[3] waits for reconciliation and keeps its hold
+    recent = await quotas.reserve('member', 'model', {})
+    now = int(time.time())
+    async with get_async_db() as db:
+        await db.execute(
+            update(QuotaEntry)
+            .where(QuotaEntry.id.in_([entry['id'] for entry in old]))
+            .values(created_at=now - 91 * 86400)
+        )
+        await db.execute(update(QuotaEntry).where(QuotaEntry.id == old[3]['id']).values(state='pending', sent=True))
+        await db.commit()
+    before = await quotas.quota_summary('member')
+    assert before['period']['used'] == 1 and before['period']['reserved'] == 3
+
+    assert await quotas.purge_old_entries(now=now, days=0) == 0
+    assert await quotas.purge_old_entries(now=now, days=90) == 4
+    async with get_async_db() as db:
+        left = (await db.execute(select(QuotaEntry.id))).scalars().all()
+    assert left == [recent['id']]
+    after = await quotas.quota_summary('member')
+    # Settled usage stays; the two abandoned holds go back to the member.
+    assert after['period']['used'] == 1 and after['period']['reserved'] == 1
+    assert await quotas.purge_old_entries(now=now, days=90) == 0

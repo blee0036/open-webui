@@ -60,6 +60,8 @@ async def clean_team_tables():
             'file',
             'auth_session',
             'api_key',
+            'model',
+            'model_history',
         }
     ]
     async with get_async_db() as db:

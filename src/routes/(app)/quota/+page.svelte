@@ -3,8 +3,9 @@
 	import {
 		getMyQuota,
 		teamRequest,
-		quotaNumber,
+		quotaAmount,
 		quotaDate,
+		entryUnit,
 		type QuotaSummary
 	} from '$lib/apis/team';
 	import PageShell from '$lib/components/team/PageShell.svelte';
@@ -75,9 +76,9 @@
 							)}
 						</p>
 						<p class="mt-2 text-4xl font-semibold tracking-tight">
-							{quotaNumber(quota.available)}
+							{quotaAmount(quota.available, quota.plan?.unit)}
 							<span class="text-base font-normal text-gray-500"
-								>{$i18n.t(quota.plan?.unit === 'requests' ? 'requests left' : 'credits left')}</span
+								>{$i18n.t(quota.plan?.unit === 'requests' ? 'requests left' : 'available')}</span
 							>
 						</p>
 					</div>
@@ -107,7 +108,9 @@
 					{#each [['Base allowance', quota.period.base], ['Temporary bonus', quota.period.bonus], ['Settled usage', quota.period.used], ['Reserved usage', quota.period.reserved], ['Overage', quota.overage]] as item}
 						<div>
 							<dt class="text-sm text-gray-500">{$i18n.t(String(item[0]))}</dt>
-							<dd class="mt-1 text-lg font-medium">{quotaNumber(Number(item[1]))}</dd>
+							<dd class="mt-1 text-lg font-medium">
+								{quotaAmount(Number(item[1]), quota.plan?.unit)}
+							</dd>
 						</div>
 					{/each}
 				</dl>
@@ -118,7 +121,7 @@
 					</p>{/if}
 				{#if quota.plan?.unit === 'credits'}<p class="mt-3 text-sm text-gray-500">
 						{$i18n.t(
-							'1 USD equivalent = 1,000,000 credits. Each attempt uses its frozen model price.'
+							'Amounts are in USD. Each request is charged at the model price in effect when it was sent.'
 						)}
 					</p>{/if}
 			</section>
@@ -155,9 +158,13 @@
 													)}</pre>
 											</details>{/if}</td
 									><td
-										>{entry.charged ?? '—'} / {['reserved', 'pending'].includes(entry.state)
-											? entry.reserved
-											: 0}</td
+										>{entry.charged == null
+											? '—'
+											: quotaAmount(entry.charged, entryUnit(entry), true)} / {quotaAmount(
+											['reserved', 'pending'].includes(entry.state) ? entry.reserved : 0,
+											entryUnit(entry),
+											true
+										)}</td
 									></tr
 								>{/each}
 						</tbody>

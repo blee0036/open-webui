@@ -76,6 +76,7 @@ services:
       # 8C32G sizing: each sandbox is capped at 1 CPU / 2 GiB. Allow ~2 GiB free RAM per slot.
       SANDBOX_MAX_RUNNING: ${SANDBOX_MAX_RUNNING:-10}
       SANDBOX_IDLE_SECONDS: ${SANDBOX_IDLE_SECONDS:-600}
+      SANDBOX_ENABLE_BROWSER: ${SANDBOX_ENABLE_BROWSER:-false}
       SANDBOX_EXECUTION_SECONDS: '120'
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
