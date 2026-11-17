@@ -95,6 +95,7 @@ async def test_sso_identity_not_email_and_wrong_tenant(monkeypatch):
     with pytest.raises(HTTPException) as error:
         await sso.bind_identity(one, {**profile, 'tenant_key': 'wrong'})
     assert error.value.status_code == 403
+    assert 'tenant_key: wrong' in error.value.detail  # copyable into the allowlist
     async with get_async_db() as db:
         (await db.get(Auth, user.id)).active = False
         await db.commit()

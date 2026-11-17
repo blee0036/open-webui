@@ -1,5 +1,6 @@
 """Lark/Feishu custom-app authorization-code callbacks, independent of legacy OAuth."""
 
+import logging
 import secrets
 import time
 import uuid
@@ -27,6 +28,7 @@ from open_webui.utils.groups import apply_default_group_assignment
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import delete, select, update
 
+log = logging.getLogger(__name__)
 router = APIRouter()
 PLATFORMS = {
     'feishu': ('https://accounts.feishu.cn', 'https://open.feishu.cn'),
@@ -306,8 +308,13 @@ async def exchange_identity(connection, code):
 async def bind_identity(connection, profile):
     tenant = str(profile.get('tenant_key') or '')
     subject = str(profile.get('open_id') or '')
-    if not subject or not tenant or tenant not in connection['tenant_ids']:
+    if not subject or not tenant:
         raise HTTPException(403, 'This account does not belong to an allowed enterprise')
+    if tenant not in connection['tenant_ids']:
+        # tenant_key is an organisation identifier, not a secret. Showing it lets the
+        # administrator copy it into the allowlist after a first test login.
+        log.info('Enterprise login rejected for connection %s: tenant_key %s not allowed', connection['id'], tenant)
+        raise HTTPException(403, f'This account does not belong to an allowed enterprise (tenant_key: {tenant[:128]})')
     # Compute the unused password before taking a database write lock.
     password = await get_password_hash(secrets.token_urlsafe(48))
     # The tenant allowlist is the signup gate, so ENABLE_SIGNUP does not apply here.
