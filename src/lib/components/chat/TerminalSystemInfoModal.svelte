@@ -73,7 +73,7 @@
 					title: ''
 				},
 				{
-					label: $i18n.t('Memory'),
+					label: $i18n.t('RAM'),
 					value: data.memory ? `${bytes(data.memory.used)} / ${bytes(data.memory.total)}` : '—',
 					percent: percentage(data.memory?.used, data.memory?.total),
 					scope: data.memory?.scope,
@@ -275,7 +275,7 @@
 												class="inline-flex items-center gap-0.5 pb-1"
 												on:click={() => (sort = 'memory_bytes')}
 											>
-												{$i18n.t('Memory')}{#if sort === 'memory_bytes'}<ChevronDown
+												{$i18n.t('RAM')}{#if sort === 'memory_bytes'}<ChevronDown
 														className="size-2.5"
 													/>{/if}
 											</button>

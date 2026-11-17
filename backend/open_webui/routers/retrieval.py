@@ -36,13 +36,13 @@ from langchain_text_splitters import (
     TokenTextSplitter,
 )
 from open_webui.config import (
-    Config,
     DEFAULT_LOCALE,
     RAG_EMBEDDING_MODEL_AUTO_UPDATE,
     RAG_EMBEDDING_MODEL_TRUST_REMOTE_CODE,
     RAG_RERANKING_MODEL_AUTO_UPDATE,
     RAG_RERANKING_MODEL_TRUST_REMOTE_CODE,
     UPLOAD_DIR,
+    Config,
 )
 from open_webui.constants import ERROR_MESSAGES
 from open_webui.env import (
@@ -59,6 +59,7 @@ from open_webui.env import (
     SENTENCE_TRANSFORMERS_MODEL_KWARGS,
     USE_SLIM,
     USER_AGENT,
+    WEB_SEARCH_FALLBACK_ENGINE,
 )
 from open_webui.events import EVENTS, publish_event
 from open_webui.internal.db import get_async_db, get_async_session
@@ -95,17 +96,17 @@ from open_webui.retrieval.web.firecrawl import search_firecrawl
 from open_webui.retrieval.web.google_pse import search_google_pse
 from open_webui.retrieval.web.jina_search import search_jina
 from open_webui.retrieval.web.kagi import search_kagi
-from open_webui.retrieval.web.utils import assert_identity_encoding, get_ssrf_safe_session, validate_url
+from open_webui.retrieval.web.linkup import search_linkup
 
 # Web search engines
 from open_webui.retrieval.web.main import SearchResult
 from open_webui.retrieval.web.microsoft_web_iq import search_microsoft_web_iq
 from open_webui.retrieval.web.mojeek import search_mojeek
 from open_webui.retrieval.web.ollama import search_ollama_cloud
+from open_webui.retrieval.web.openserp import search_openserp
 from open_webui.retrieval.web.perplexity import search_perplexity_metered
 from open_webui.retrieval.web.perplexity_search import search_perplexity_search
 from open_webui.retrieval.web.searchapi import search_searchapi
-from open_webui.retrieval.web.openserp import search_openserp
 from open_webui.retrieval.web.searxng import search_searxng
 from open_webui.retrieval.web.serpapi import search_serpapi
 from open_webui.retrieval.web.serper import search_serper
@@ -115,11 +116,10 @@ from open_webui.retrieval.web.serpstack import search_serpstack
 from open_webui.retrieval.web.sougou import search_sougou
 from open_webui.retrieval.web.staan import search_staan
 from open_webui.retrieval.web.tavily import search_tavily
-from open_webui.retrieval.web.utils import get_web_loader
+from open_webui.retrieval.web.utils import assert_identity_encoding, get_ssrf_safe_session, get_web_loader, validate_url
 from open_webui.retrieval.web.yacy import search_yacy
 from open_webui.retrieval.web.yandex import search_yandex
 from open_webui.retrieval.web.ydc import search_youcom
-from open_webui.retrieval.web.linkup import search_linkup
 from open_webui.storage.provider import Storage
 from open_webui.utils.access_control import has_permission
 from open_webui.utils.access_control.files import has_access_to_file
@@ -2262,7 +2262,30 @@ async def process_web(
 async def search_web(
     request: Request, engine: str, query: str, user=None, *, config: dict | None = None
 ) -> list[SearchResult]:
-    """Dispatch a web search query to the configured engine and return results.
+    """Search with the configured engine; on an error or no results, try WEB_SEARCH_FALLBACK_ENGINE.
+
+    The team deployment uses DuckDuckGo (no key, but rate-limited) with the bundled SearXNG
+    as fallback. Without a fallback, or when it equals the engine, behaviour is unchanged.
+    """
+    if config is None:
+        config = await Config.get_many(*RETRIEVAL_CONFIG_KEYS.values())
+    fallback = WEB_SEARCH_FALLBACK_ENGINE
+    if not fallback or fallback == engine:
+        return await search_engine(request, engine, query, user, config=config)
+    try:
+        results = await search_engine(request, engine, query, user, config=config)
+        if results:
+            return results
+        log.warning('Web search engine %s returned no results; trying %s', engine, fallback)
+    except Exception as error:
+        log.warning('Web search engine %s failed (%s); trying %s', engine, error, fallback)
+    return await search_engine(request, fallback, query, user, config=config)
+
+
+async def search_engine(
+    request: Request, engine: str, query: str, user=None, *, config: dict | None = None
+) -> list[SearchResult]:
+    """Dispatch a web search query to one engine and return results.
 
     Providers that have been migrated to async (aiohttp) are awaited natively.
     Legacy sync providers are offloaded via ``asyncio.to_thread`` to avoid

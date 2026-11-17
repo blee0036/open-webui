@@ -65,6 +65,9 @@ export async function teamRequest<T = any>(path: string, options: RequestInit = 
 export const saveTeam = (path: string, data: unknown, method = 'PUT') =>
 	teamRequest(path, { method, body: JSON.stringify(data) });
 export const getMyQuota = () => teamRequest<QuotaSummary>('/team/quota/me');
+// Enterprise ID remembered by /connect/<id> and the sign-in page (localStorage).
+export const ENTERPRISE_LOGIN_KEY = 'enterpriseLoginId';
+
 export const quotaNumber = (value: number | undefined) => (value ?? 0).toLocaleString();
 
 // Credit plans are stored in micro-USD (1 USD = 1,000,000 credits, as quota_pricing.py

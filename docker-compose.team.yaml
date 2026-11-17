@@ -48,7 +48,10 @@ services:
       SANDBOX_CONTROLLER_URL: http://sandbox:8080
       SANDBOX_CONTROLLER_KEY: ${SANDBOX_CONTROLLER_KEY:?Set a controller-only secret}
       ENABLE_WEB_SEARCH: 'true'
-      WEB_SEARCH_ENGINE: searxng
+      # DuckDuckGo first (bundled ddgs, no key); when it errors, is rate-limited or finds
+      # nothing, the same query goes to the bundled SearXNG.
+      WEB_SEARCH_ENGINE: duckduckgo
+      WEB_SEARCH_FALLBACK_ENGINE: searxng
       SEARXNG_QUERY_URL: http://searxng:8080/search?q=<query>&format=json
       PERSONAL_MCP_ALLOWED_PRIVATE_ORIGINS: ${PERSONAL_MCP_ALLOWED_PRIVATE_ORIGINS:-}
     volumes:

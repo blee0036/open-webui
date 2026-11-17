@@ -849,6 +849,8 @@ try:
 except ValueError:
     QUOTA_ENTRY_RETENTION_DAYS = 90
 BYPASS_RETRIEVAL_ACCESS_CONTROL = os.getenv('BYPASS_RETRIEVAL_ACCESS_CONTROL', 'False').lower() == 'true'
+# Second web search engine tried when the configured one fails or finds nothing (e.g. 'searxng').
+WEB_SEARCH_FALLBACK_ENGINE = os.getenv('WEB_SEARCH_FALLBACK_ENGINE', '').strip().lower()
 
 # When True, collection names that do not match any known file-*, user-memory-*,
 # web-search-*, or knowledge-base collection are allowed through access control

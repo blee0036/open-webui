@@ -734,7 +734,7 @@
 									<div class="flex flex-col flex-1">
 										<div class="flex justify-between mb-0.5">
 											<label for="policy-memory" class={`text-xs text-gray-500`}>
-												{$i18n.t('Memory')}
+												{$i18n.t('RAM')}
 											</label>
 										</div>
 										<div class="flex flex-1 items-center">

@@ -678,3 +678,27 @@ async def test_team_mode_publishes_new_connection_models_once(monkeypatch):
     assert not await model_utils.publish_new_base_models(
         [{'id': 'gpt-y', 'owned_by': 'openai'}], await Models.get_all_models()
     )
+
+
+@pytest.mark.asyncio
+async def test_enterprise_login_by_typed_id_without_listing_enterprises():
+    assert await sso.login_connections() == {'enabled': False}
+    await connection('Company-CN')
+    # The public endpoint never names enterprises.
+    assert await sso.login_connections() == {'enabled': True}
+
+    response = await sso.login('  company-cn ')
+    location = urlsplit(response.headers['location'])
+    assert location.netloc == 'accounts.feishu.cn'
+    state = parse_qs(location.query)['state'][0]
+    async with get_async_db() as db:
+        assert (await db.get(EnterpriseLoginState, state)).connection_id == 'Company-CN'
+    assert 'Path=/api/v1/enterprise/Company-CN/callback' in response.headers['set-cookie']
+
+    response = await sso.login('unknown')
+    location = urlsplit(response.headers['location'])
+    assert location.path == '/auth'
+    assert parse_qs(location.query) == {
+        'error': ['Enterprise ID not found or enterprise login is disabled'],
+        'connect': ['unknown'],
+    }

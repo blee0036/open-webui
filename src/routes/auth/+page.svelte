@@ -24,6 +24,7 @@
 	} from '$lib/apis/auths';
 
 	import { WEBUI_API_BASE_URL, WEBUI_BASE_URL } from '$lib/constants';
+	import { ENTERPRISE_LOGIN_KEY } from '$lib/apis/team';
 	import { WEBUI_NAME, config, user, socket } from '$lib/stores';
 
 	import { generateInitialsImage, canvasPixelTest, getUserTimezone } from '$lib/utils';
@@ -36,18 +37,37 @@
 	const i18n = getContext('i18n');
 
 	let loaded = false;
-	let enterprises: { id: string; name: string; platform: string }[] = [];
+	// Enterprises are never listed: members type their enterprise ID (the connection ID),
+	// prefilled from /connect/<id>, /auth?connect=<id> or the last one used on this browser.
+	const ENTERPRISE_KEY = ENTERPRISE_LOGIN_KEY;
+	let enterpriseLogin = false;
 	let enterprise = '';
 	let enterpriseError = '';
 	const loadEnterprises = async () => {
 		try {
 			const response = await fetch(`${WEBUI_API_BASE_URL}/enterprise/connections`);
 			if (!response.ok) throw new Error($i18n.t('Enterprise login is unavailable'));
-			enterprises = await response.json();
+			enterpriseLogin = (await response.json())?.enabled === true;
 			enterpriseError = '';
 		} catch (error) {
 			enterpriseError = error instanceof Error ? error.message : String(error);
 		}
+		if (!enterprise) {
+			try {
+				enterprise =
+					$page.url.searchParams.get('connect') ?? localStorage.getItem(ENTERPRISE_KEY) ?? '';
+			} catch {
+				enterprise = $page.url.searchParams.get('connect') ?? '';
+			}
+		}
+	};
+	const enterpriseSignIn = () => {
+		const id = enterprise.trim();
+		if (!id) return;
+		try {
+			localStorage.setItem(ENTERPRISE_KEY, id);
+		} catch {}
+		window.location.href = `${WEBUI_API_BASE_URL}/enterprise/${encodeURIComponent(id)}/login`;
 	};
 
 	let mode = $config?.features.enable_ldap ? 'ldap' : 'signin';
@@ -239,7 +259,7 @@
 			const providers = Object.keys($config?.oauth?.providers ?? {});
 			if (
 				providers.length === 1 &&
-				!enterprises.length &&
+				!enterpriseLogin &&
 				!enterpriseError &&
 				$config?.features?.auth !== false &&
 				$config?.features?.enable_login_form === false &&
@@ -536,31 +556,26 @@
 								</div>
 							</form>
 
-							{#if enterprises.length > 0}
-								<form
-									class="mt-5 space-y-3 text-left"
-									on:submit|preventDefault={() => {
-										if (enterprise)
-											window.location.href = `${WEBUI_API_BASE_URL}/enterprise/${encodeURIComponent(enterprise)}/login`;
-									}}
-								>
+							{#if enterpriseLogin}
+								<form class="mt-5 space-y-3 text-left" on:submit|preventDefault={enterpriseSignIn}>
 									<label class="block text-sm" for="enterprise-login"
-										>{$i18n.t('Select your enterprise')}</label
+										>{$i18n.t('Enterprise ID')}</label
 									>
-									<select
+									<input
 										id="enterprise-login"
 										class="w-full rounded-xl bg-gray-100 px-4 py-3 text-sm dark:bg-gray-900"
 										bind:value={enterprise}
+										placeholder={$i18n.t('Provided by your administrator')}
+										autocomplete="organization"
+										autocapitalize="off"
+										spellcheck="false"
+										maxlength="80"
 										required
-									>
-										<option value="" disabled>{$i18n.t('Select your enterprise')}</option>
-										{#each enterprises as item}<option value={item.id}
-												>{item.name} · {item.platform === 'lark' ? 'Lark' : '飞书'}</option
-											>{/each}
-									</select>
+									/>
 									<button
 										class="w-full rounded-full bg-gray-900 px-4 py-3 text-sm text-white disabled:opacity-40 dark:bg-gray-100 dark:text-gray-900"
-										disabled={!enterprise}>{$i18n.t('Continue with enterprise account')}</button
+										disabled={!enterprise.trim()}
+										>{$i18n.t('Continue with enterprise account')}</button
 									>
 								</form>
 							{:else if enterpriseError}

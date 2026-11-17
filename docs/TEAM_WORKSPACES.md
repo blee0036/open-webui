@@ -8,7 +8,7 @@
 
 使用 Linux Docker Engine 和 Docker Compose v2，具体配置和启动命令见[部署指南第 1～3 步](DEPLOY_GUIDE.md#prepare)。控制器必须只有 **一个 worker、一个实例**；它管理本机 Docker，不是跨主机调度器。
 
-`docker-compose.team.yaml` 仅用于**新部署**，默认 PostgreSQL 17 + pgvector、1024 维 `BAAI/bge-m3`、本地 SearXNG。已有部署按后文升级，不将原向量库直接挂到此模板。
+`docker-compose.team.yaml` 仅用于**新部署**，默认 PostgreSQL 17 + pgvector、1024 维 `BAAI/bge-m3`、DuckDuckGo 联网搜索（失败时回退到本地 SearXNG）。已有部署按后文升级，不将原向量库直接挂到此模板。
 
 容器运行、存储和搜索带宽有自托管成本，不使用收费的搜索或 Embedding API。
 

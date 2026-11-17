@@ -2,6 +2,7 @@
 	import { onMount, getContext } from 'svelte';
 	import { toast } from 'svelte-sonner';
 	import { teamRequest, saveTeam } from '$lib/apis/team';
+	import { copyToClipboard } from '$lib/utils';
 	import ConfirmDialog from '$lib/components/common/ConfirmDialog.svelte';
 	const i18n = getContext<any>('i18n');
 	let connections: any[] = [];
@@ -13,6 +14,11 @@
 	let identityRows: any[] = [];
 	let link = { connection_id: '', tenant_id: '', subject: '', user_id: '', reason: '' };
 	let confirmLink = false;
+	// Share this with the enterprise's employees; the sign-in page never lists enterprises.
+	const loginUrl = (id: string) => `${location.origin}/connect/${encodeURIComponent(id)}`;
+	async function copyLoginUrl(id: string) {
+		if (await copyToClipboard(loginUrl(id))) toast.success($i18n.t('Copied to clipboard'));
+	}
 	async function loadIdentities() {
 		try {
 			identityRows = await teamRequest('/enterprise/admin/identities');
@@ -109,20 +115,31 @@
 		<h2 class="text-lg font-medium">{$i18n.t('Enterprise login')}</h2>
 		<p class="mt-2 text-sm leading-6 text-gray-500">
 			{$i18n.t(
-				'Each enterprise uses its own Lark or Feishu custom app. Employees select an enterprise before authorization. Matching email addresses never merge accounts.'
+				'Each enterprise uses its own Lark or Feishu custom app. Enterprises are not listed on the sign-in page: employees enter the connection ID as their enterprise ID, or open the login URL below, which fills it in. Matching email addresses never merge accounts.'
 			)}
 		</p>
 		<div class="mt-6 space-y-2">
-			{#each connections as row}<button
-					class="flex w-full items-center justify-between rounded-xl bg-gray-50 p-4 text-left dark:bg-gray-900"
-					on:click={() => choose(row)}
-					><span
-						><strong class="text-sm">{row.name}</strong><span
-							class="mt-1 block text-xs text-gray-500">{row.platform} · {row.client_id}</span
-						></span
-					><span class="text-xs text-gray-500">{$i18n.t(row.enabled ? 'Enabled' : 'Disabled')}</span
-					></button
-				>{/each}
+			{#each connections as row}<div class="rounded-xl bg-gray-50 dark:bg-gray-900">
+					<button
+						class="flex w-full items-center justify-between p-4 pb-2 text-left"
+						on:click={() => choose(row)}
+						><span
+							><strong class="text-sm">{row.name}</strong><span
+								class="mt-1 block text-xs text-gray-500"
+								>{$i18n.t('Enterprise ID')}: {row.id} · {row.platform}</span
+							></span
+						><span class="text-xs text-gray-500"
+							>{$i18n.t(row.enabled ? 'Enabled' : 'Disabled')}</span
+						></button
+					>
+					<div class="flex items-center gap-2 px-4 pb-3 text-xs">
+						<span class="min-w-0 flex-1 truncate font-mono text-gray-500" title={loginUrl(row.id)}
+							>{loginUrl(row.id)}</span
+						><button type="button" class="shrink-0 underline" on:click={() => copyLoginUrl(row.id)}
+							>{$i18n.t('Copy login URL')}</button
+						>
+					</div>
+				</div>{/each}
 		</div>
 		<button class="mt-4 text-sm underline" on:click={newConnection}
 			>{$i18n.t('Add enterprise connection')}</button

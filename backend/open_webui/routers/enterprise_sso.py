@@ -26,7 +26,7 @@ from open_webui.utils.quotas import record
 from open_webui.utils.team_secrets import seal, unseal
 from open_webui.utils.groups import apply_default_group_assignment
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, func, select, update
 
 log = logging.getLogger(__name__)
 router = APIRouter()
@@ -81,15 +81,25 @@ def public_connection(row):
 
 @router.get('/connections')
 async def login_connections():
+    """Public: only whether enterprise login exists. Enterprises are not listed; members
+    type their enterprise ID (the connection ID) or open /auth?enterprise=<id>."""
     async with get_async_db() as db:
-        rows = (
+        enabled = (
+            await db.execute(select(EnterpriseConnection.id).where(EnterpriseConnection.enabled.is_(True)).limit(1))
+        ).first()
+        return {'enabled': enabled is not None}
+
+
+async def find_connection(db, connection_id: str):
+    """Exact ID first, then case-insensitive, so a typed `Company-CN` still works."""
+    connection = await db.get(EnterpriseConnection, connection_id)
+    if connection is None and connection_id:
+        connection = (
             await db.execute(
-                select(EnterpriseConnection)
-                .where(EnterpriseConnection.enabled.is_(True))
-                .order_by(EnterpriseConnection.name)
+                select(EnterpriseConnection).where(func.lower(EnterpriseConnection.id) == connection_id.lower())
             )
-        ).scalars()
-        return [{'id': row.id, 'name': row.name, 'platform': row.platform} for row in rows]
+        ).scalar_one_or_none()
+    return connection
 
 
 @router.get('/admin/connections')
@@ -238,9 +248,20 @@ async def link_identity(connection_id: str, form: IdentityLinkForm, user=Depends
 @router.get('/{connection_id}/login')
 async def login(connection_id: str):
     async with get_async_db() as db:
-        connection = await db.get(EnterpriseConnection, connection_id)
+        connection = await find_connection(db, connection_id.strip())
         if not connection or not connection.enabled:
-            raise HTTPException(404, 'Enterprise login is unavailable')
+            # Back to the sign-in form with the typed ID kept, like any wrong-account error.
+            return RedirectResponse(
+                '/auth?'
+                + urlencode(
+                    {
+                        'error': 'Enterprise ID not found or enterprise login is disabled',
+                        'connect': connection_id[:80],
+                    }
+                ),
+                status_code=302,
+            )
+        connection_id = connection.id  # canonical spelling for the state row and cookie path
         state, nonce = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
         now = int(time.time())
         await db.execute(delete(EnterpriseLoginState).where(EnterpriseLoginState.expires_at < now))
