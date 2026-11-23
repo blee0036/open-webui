@@ -2,7 +2,7 @@
 	import { toast } from 'svelte-sonner';
 
 	import { page } from '$app/stores';
-	import { selectedFolder, temporaryChatEnabled } from '$lib/stores';
+	import { selectedFolder, temporaryChat } from '$lib/stores';
 	import { teamRequest } from '$lib/apis/team';
 	// The chat itself is rendered by the (app) layout; this page only applies ?project=<id>.
 	let loadedProject = '';
@@ -12,7 +12,7 @@
 			const project = await teamRequest(`/projects/${encodeURIComponent(id)}`);
 			if (loadedProject === id) {
 				selectedFolder.set(project);
-				temporaryChatEnabled.set(false);
+				temporaryChat.set(false);
 			}
 		} catch (error) {
 			selectedFolder.set(null);

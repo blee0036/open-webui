@@ -3,7 +3,7 @@
 	import { goto } from '$app/navigation';
 	import { page } from '$app/stores';
 	import { toast } from 'svelte-sonner';
-	import { selectedFolder, models, user, temporaryChatEnabled } from '$lib/stores';
+	import { selectedFolder, models, user, temporaryChat } from '$lib/stores';
 	import { teamRequest, saveTeam, quotaDate, shouldIndexProjectReference } from '$lib/apis/team';
 	import { uploadFile, getFileBlobById } from '$lib/apis/files';
 	import type { Project, ConversationVisibility } from '$lib/types/team';
@@ -73,7 +73,7 @@
 	}
 	async function startChat() {
 		selectedFolder.set(project as any);
-		temporaryChatEnabled.set(false);
+		temporaryChat.set(false);
 		await goto(`/?project=${project!.id}`);
 	}
 	async function search() {

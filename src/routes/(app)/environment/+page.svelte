@@ -3,20 +3,20 @@
 	import { page } from '$app/stores';
 	import { goto } from '$app/navigation';
 	import { toast } from 'svelte-sonner';
-	import { settings, terminalServers } from '$lib/stores';
+	import { terminalServers } from '$lib/stores';
 	import {
 		teamRequest,
 		saveTeam,
 		shouldIndexProjectReference,
 		type WorkspaceStatus
 	} from '$lib/apis/team';
-	import { resolveTerminalConnection, downloadFileBlob } from '$lib/apis/terminal';
+	import { resolveTerminalTarget, downloadFileBlob } from '$lib/apis/terminal';
 	import { uploadFile } from '$lib/apis/files';
 	import type { Project } from '$lib/types/team';
 	import PageShell from '$lib/components/team/PageShell.svelte';
 	import FileNav from '$lib/components/chat/FileNav.svelte';
 	import WorkspaceSession from '$lib/components/team/WorkspaceSession.svelte';
-	import Desktop from '$lib/components/chat/ChatTabs/Desktop.svelte';
+	import Desktop from '$lib/components/chat/Tabs/Desktop.svelte';
 	import ConfirmDialog from '$lib/components/common/ConfirmDialog.svelte';
 	const i18n = getContext<any>('i18n');
 	let scope = $page.url.searchParams.get('project') || 'personal';
@@ -32,13 +32,13 @@
 	let fileNav: FileNav;
 	let reload = 0;
 	let refreshing = false;
-	$: connection = resolveTerminalConnection(
+	$: context = scope === 'personal' ? 'local:personal-workspace' : `project:${scope}`;
+	$: connection = resolveTerminalTarget(
 		selector,
 		$terminalServers ?? [],
-		$settings?.terminalServers ?? [],
-		typeof localStorage !== 'undefined' ? localStorage.token : ''
+		typeof localStorage !== 'undefined' ? localStorage.token : '',
+		{ chatId: context }
 	);
-	$: context = scope === 'personal' ? 'local:personal-workspace' : `project:${scope}`;
 	$: managed = selector === 'managed';
 	$: available = !managed || workspace?.status === 'running';
 	$: active = ['running', 'starting', 'queued'].includes(workspace?.status ?? '');
@@ -104,7 +104,7 @@
 		}
 		busy = true;
 		try {
-			const downloaded = await downloadFileBlob(connection.baseUrl, connection.key, path, context);
+			const downloaded = await downloadFileBlob(connection, path);
 			if (!downloaded) throw new Error($i18n.t('File is unavailable'));
 			const file = new File([downloaded.blob], downloaded.filename, { type: downloaded.blob.type });
 			const index = shouldIndexProjectReference(file);
@@ -289,11 +289,10 @@
 						manageFileRequests={false}
 					/>
 				{:else if tab === 'terminal' || tab === 'browser'}{#key tab}<WorkspaceSession
-							{connection}
-							chatId={context}
+							target={connection}
 							kind={tab}
 						/>{/key}
-				{:else}<Desktop {connection} chatId={context} />{/if}
+				{:else}<Desktop target={connection} />{/if}
 			</div>
 		{/key}
 	{:else}<div
