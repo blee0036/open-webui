@@ -20,7 +20,7 @@ from open_webui.utils.quota_pricing import (
     price_usage,
     request_snapshot,
 )
-from sqlalchemy import case, delete, func, select, update
+from sqlalchemy import and_, case, delete, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
@@ -362,21 +362,22 @@ async def settle(entry, usage=None, detail=None, *, override_charge=None, actor_
         elif usage is None and detail is None and per_call_price(row.pricing):
             # Per-call prices (new-api "按次", e.g. fixed(0.04)) need no upstream usage.
             # Local image backends (A1111/ComfyUI) and some image APIs never report tokens.
-            # An upstream error (detail set) stays pending for reconciliation instead.
             result = _settle_price(row.pricing, {})
             charge, state = result['credits'], 'settled'
             row.pricing = {**row.pricing, 'settlement': result}
         elif usage is None:
-            row.state, row.detail = 'pending', detail or 'Upstream usage is unavailable; reservation retained.'
-            return
+            # No usage (upstream error, dropped stream, crash): settle at zero rather than
+            # holding the reservation for manual reconciliation.
+            charge, state = 0, 'settled'
+            detail = detail or 'Upstream usage is unavailable; settled at zero.'
         else:
             try:
                 result = _settle_price(row.pricing, usage)
                 charge, state = result['credits'], 'settled'
                 row.pricing = {**row.pricing, 'settlement': result}
             except ValueError as error:
-                row.state, row.detail, row.usage = 'pending', str(error), usage
-                return
+                charge, state = 0, 'settled'
+                detail = f'Unusable upstream usage ({error}); settled at zero.'
         period.reserved -= row.reserved
         period.used += charge
         row.charged, row.state, row.usage, row.detail = charge, state, usage, detail
@@ -392,6 +393,31 @@ async def settle(entry, usage=None, detail=None, *, override_charge=None, actor_
                     created_at=row.settled_at,
                 )
             )
+
+
+# A request still holding its reservation after this long was cut off (restart, crash)
+# before it could settle. Agent runs and long generations finish well within it.
+STALE_RESERVATION_SECONDS = 24 * 3600
+
+
+async def settle_abandoned_entries(now=None):
+    """Settle at zero whatever is still holding quota: legacy 'pending' rows awaiting manual
+    reconciliation, and reservations whose request died before settling. Unsent ones are released."""
+    cutoff = int(now if now is not None else time.time()) - STALE_RESERVATION_SECONDS
+    async with get_async_db() as db:
+        rows = (
+            await db.execute(
+                select(QuotaEntry.id, QuotaEntry.user_id).where(
+                    or_(
+                        QuotaEntry.state == 'pending',
+                        and_(QuotaEntry.state == 'reserved', QuotaEntry.created_at < cutoff),
+                    )
+                )
+            )
+        ).all()
+    for entry_id, user_id in rows:
+        await settle({'id': entry_id, 'user_id': user_id}, detail='Usage was never reported; settled at zero.')
+    return len(rows)
 
 
 async def purge_old_entries(now=None, days=None):
@@ -431,6 +457,12 @@ async def purge_old_entries(now=None, days=None):
 
 async def periodic_quota_entry_purge(interval=6 * 3600):
     while True:
+        try:
+            settled = await settle_abandoned_entries()
+            if settled:
+                log.info('Settled %d requests without reported usage at zero', settled)
+        except Exception:
+            log.exception('Settling abandoned requests failed')
         try:
             removed = await purge_old_entries()
             if removed:

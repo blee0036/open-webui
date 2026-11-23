@@ -113,7 +113,7 @@ async def test_real_attempts_retry_and_tool_continuation(model_server):
 
 
 @pytest.mark.asyncio
-async def test_binary_pending_and_json_read_settlement(model_server):
+async def test_binary_without_usage_and_json_read_settlement(model_server):
     await enable('credits')
     url, _ = model_server
     session = await get_session()
@@ -121,21 +121,20 @@ async def test_binary_pending_and_json_read_settlement(model_server):
     response = await model_request(session, None, user, model_id='test', method='POST', url=url + '/binary')
     assert await response.read() == b'ID3test-audio'
     await cleanup_response(response)
-    held = (await quota_summary('creator'))['period']['reserved']
-    assert held > 0
     response = await model_request(session, None, user, method='POST', url=url + '/json', json={'model': 'test'})
     assert json.loads(await response.read())['usage']['prompt_tokens'] == 12
     await cleanup_response(response)
     summary = await quota_summary('creator')
-    assert summary['period']['used'] == 15 and summary['period']['reserved'] == held
+    # The binary response reported no usage, so it settled at zero and released its hold.
+    assert summary['period']['used'] == 15 and summary['period']['reserved'] == 0
     async with get_async_db() as db:
         rows = (await db.execute(select(QuotaEntry).where(QuotaEntry.user_id == 'creator'))).scalars().all()
-        assert {row.state for row in rows} == {'settled', 'pending'}
+        assert {row.state for row in rows} == {'settled'}
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('kind', ['null', 'false', 'empty', 'zero'])
-async def test_invalid_usage_is_not_refunded_as_zero(model_server, kind):
+async def test_invalid_usage_settles_at_zero(model_server, kind):
     await enable('credits')
     url, received = model_server
     response = await model_request(
@@ -152,10 +151,7 @@ async def test_invalid_usage_is_not_refunded_as_zero(model_server, kind):
     assert len(received) == 1 and summary['period']['used'] == 0
     async with get_async_db() as db:
         entry = (await db.execute(select(QuotaEntry))).scalar_one()
-        if kind == 'zero':
-            assert entry.state == 'settled' and summary['period']['reserved'] == 0
-        else:
-            assert entry.state == 'pending' and summary['period']['reserved'] > 0
+        assert entry.state == 'settled' and entry.charged == 0 and summary['period']['reserved'] == 0
 
 
 @pytest.mark.asyncio
@@ -193,7 +189,7 @@ def test_provider_usage_completion_and_multichunk_anthropic():
 
 
 @pytest.mark.asyncio
-async def test_realtime_counts_each_response_and_retains_interruption():
+async def test_realtime_counts_each_response_and_settles_interruption_at_zero():
     await enable('credits')
 
     class Socket:
@@ -209,7 +205,7 @@ async def test_realtime_counts_each_response_and_retains_interruption():
     await meter.send(Socket(), {'type': 'response.create', 'response': {}})
     await meter.close()
     summary = await quota_summary('voice-user')
-    assert summary['period']['used'] == 12 and summary['period']['reserved'] > 0
+    assert summary['period']['used'] == 12 and summary['period']['reserved'] == 0
 
 
 def test_realtime_vad_segments_are_bounded_and_byte_exact():
@@ -333,7 +329,7 @@ async def test_decisions_search_batches_and_auto_review_charge_actual_actor(mode
 
 
 @pytest.mark.asyncio
-async def test_decisions_missing_usage_retains_reservation_and_legacy_actorless_contract(model_server):
+async def test_decisions_missing_usage_settles_at_zero_and_legacy_actorless_contract(model_server):
     from fastapi import HTTPException
     from open_webui.utils.tool_search import post_decisions
 
@@ -346,10 +342,10 @@ async def test_decisions_missing_usage_retains_reservation_and_legacy_actorless_
     assert error.value.status_code == 400 and len(received) == 1
     await post_decisions(payload, url + '/no-usage', '', user=SimpleNamespace(id='pending-decisions'))
     summary = await quota_summary('pending-decisions')
-    assert len(received) == 2 and summary['period']['used'] == 0 and summary['period']['reserved'] > 0
+    assert len(received) == 2 and summary['period']['used'] == 0 and summary['period']['reserved'] == 0
     async with get_async_db() as db:
         row = (await db.execute(select(QuotaEntry).where(QuotaEntry.user_id == 'pending-decisions'))).scalar_one()
-        assert row.state == 'pending' and row.model_id == 'test'
+        assert row.state == 'settled' and row.charged == 0 and row.model_id == 'test'
 
 
 @pytest.mark.asyncio

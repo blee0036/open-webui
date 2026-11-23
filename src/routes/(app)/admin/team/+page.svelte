@@ -8,7 +8,6 @@
 		quotaAmount,
 		quotaInput,
 		quotaStored,
-		entryUnit,
 		CREDITS_PER_USD,
 		type QuotaPlan
 	} from '$lib/apis/team';
@@ -47,8 +46,6 @@
 		expression: 'tier("base", p * 3 + c * 15 + cr * 0.3 + cc * 3.75 + cc1h * 6)',
 		multiplier: '1'
 	};
-	let pending: any[] = [];
-	let charges: Record<string, number> = {};
 	let audits: any[] = [];
 	let auditMore = false;
 	async function loadAudit() {
@@ -57,11 +54,10 @@
 	}
 	async function load() {
 		try {
-			[settings, plans, prices, pending] = await Promise.all([
+			[settings, plans, prices] = await Promise.all([
 				teamRequest('/team/admin/settings'),
 				teamRequest('/team/admin/plans'),
-				teamRequest('/team/admin/prices'),
-				teamRequest('/team/admin/entries?state=pending')
+				teamRequest('/team/admin/prices')
 			]);
 			error = '';
 		} catch (e) {
@@ -109,7 +105,7 @@
 <div class="mx-auto max-w-6xl px-5 py-6 md:px-10">
 	<h1 class="text-2xl font-semibold">{$i18n.t('Team & quota')}</h1>
 	<nav class="my-6 flex gap-1 overflow-x-auto border-b border-gray-200 dark:border-gray-800">
-		{#each [['packages', 'Packages'], ['members', 'Member quota'], ['pricing', 'Model pricing'], ['pending', 'Reconciliation'], ['sso', 'Enterprise login'], ['audit', 'Adjustment history']] as item}
+		{#each [['packages', 'Packages'], ['members', 'Member quota'], ['pricing', 'Model pricing'], ['sso', 'Enterprise login'], ['audit', 'Adjustment history']] as item}
 			<button
 				class="whitespace-nowrap border-b-2 px-4 py-3 text-sm {tab === item[0]
 					? 'border-current font-medium'
@@ -461,61 +457,6 @@
 		<div class="mt-10 border-t border-gray-200 pt-8 dark:border-gray-800">
 			<PriceSync on:applied={() => action(load, false)} />
 		</div>
-	{:else if tab === 'pending'}
-		<h2 class="text-lg font-medium">{$i18n.t('Usage awaiting reconciliation')}</h2>
-		<p class="mt-2 mb-5 text-sm text-gray-500">
-			{$i18n.t(
-				'Reservations remain held when upstream usage is missing. Reconcile only against verified provider usage.'
-			)}
-		</p>
-		{#each pending as entry}<form
-				class="mb-4 space-y-3 rounded-xl border border-gray-200 p-4 dark:border-gray-800"
-				on:submit|preventDefault={() =>
-					action(async () => {
-						await saveTeam(
-							`/team/admin/entries/${entry.id}/reconcile`,
-							{ charge: quotaStored(charges[entry.id], entryUnit(entry)), reason },
-							'POST'
-						);
-						await load();
-					})}
-			>
-				<div class="flex flex-wrap justify-between gap-2 text-sm">
-					<strong>{entry.model_id}</strong><span
-						>{quotaDate(entry.created_at)} · {$i18n.t('Reserved usage')}: {quotaAmount(
-							entry.reserved,
-							entryUnit(entry),
-							true
-						)}</span
-					>
-				</div>
-				<p class="break-all text-xs text-gray-500">{entry.user_id} · {entry.detail}</p>
-				<div class="flex flex-wrap gap-3">
-					<input
-						class="field max-w-40"
-						type="number"
-						min="0"
-						step={entryUnit(entry) === 'credits' ? 'any' : '1'}
-						required
-						bind:value={charges[entry.id]}
-						aria-label={$i18n.t(
-							entryUnit(entry) === 'credits' ? 'Actual charge (USD)' : 'Actual charge'
-						)}
-						placeholder={$i18n.t(
-							entryUnit(entry) === 'credits' ? 'Actual charge (USD)' : 'Actual charge'
-						)}
-					/><input
-						class="field flex-1"
-						maxlength="500"
-						bind:value={reason}
-						aria-label={$i18n.t('Note (optional)')}
-						placeholder={$i18n.t('Note (optional)')}
-					/><button class="primary" disabled={busy}>{$i18n.t('Reconcile')}</button>
-				</div>
-			</form>{/each}
-		{#if !pending.length}<p class="py-8 text-sm text-gray-500">
-				{$i18n.t('No pending settlements.')}
-			</p>{/if}
 	{:else if tab === 'sso'}<EnterpriseAdmin />
 	{:else if tab === 'audit'}
 		<div class="mb-5 flex items-center justify-between gap-3">

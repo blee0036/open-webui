@@ -83,7 +83,6 @@ async def test_pending_overrun_frozen_price_and_original_period():
         await db.commit()
     entry = await quotas.reserve('user', 'model', {'prompt_tokens': 20, 'completion_tokens': 10})
     await quotas.mark_sent(entry)
-    await quotas.settle(entry)
     old = await quotas.quota_summary('user')
     assert old['period']['reserved'] == 30
     async with get_async_db() as db:
@@ -272,19 +271,50 @@ async def test_per_call_price_settles_without_usage_and_per_unit():
         row = await db.get(quotas.QuotaEntry, entry['id'])
         assert row.state == 'settled' and row.charged == 30000
 
-    # An upstream error keeps the reservation for reconciliation instead of charging.
+    # An upstream error, or a token price without usage, settles at zero and frees the hold.
     failed = await quotas.reserve('user', 'sd-checkpoint', {}, image_count=2)
     await quotas.mark_sent(failed)
     await quotas.settle(failed, detail='HTTP 500')
-    async with get_async_db() as db:
-        assert (await db.get(quotas.QuotaEntry, failed['id'])).state == 'pending'
-
-    # Token prices without usage still wait for reconciliation.
     token = await quotas.reserve('user', 'chat', {'prompt_tokens': 1, 'completion_tokens': 1})
     await quotas.mark_sent(token)
     await quotas.settle(token)
     async with get_async_db() as db:
-        assert (await db.get(quotas.QuotaEntry, token['id'])).state == 'pending'
+        for entry in (failed, token):
+            row = await db.get(quotas.QuotaEntry, entry['id'])
+            assert row.state == 'settled' and row.charged == 0
+        assert (await db.get(QuotaPeriod, row.period_id)).reserved == 0
+
+
+@pytest.mark.asyncio
+async def test_abandoned_reservations_settle_at_zero():
+    from open_webui.models.team import QuotaEntry
+    from sqlalchemy import update
+
+    await setup(10)
+    legacy, crashed, unsent, live = [await quotas.reserve('member', 'model', {}) for _ in range(4)]
+    for entry in (legacy, crashed, live):
+        await quotas.mark_sent(entry)
+    now = int(time.time())
+    async with get_async_db() as db:
+        await db.execute(update(QuotaEntry).where(QuotaEntry.id == legacy['id']).values(state='pending'))
+        await db.execute(
+            update(QuotaEntry)
+            .where(QuotaEntry.id.in_([crashed['id'], unsent['id']]))
+            .values(created_at=now - quotas.STALE_RESERVATION_SECONDS - 1)
+        )
+        await db.commit()
+    assert await quotas.settle_abandoned_entries(now=now) == 3
+    async with get_async_db() as db:
+        states = {e['id']: (await db.get(QuotaEntry, e['id'])).state for e in (legacy, crashed, unsent, live)}
+    assert states == {
+        legacy['id']: 'settled',
+        crashed['id']: 'settled',
+        unsent['id']: 'released',
+        live['id']: 'reserved',
+    }
+    period = (await quotas.quota_summary('member'))['period']
+    # Request-count plans still count a sent request once; nothing is held any more except `live`.
+    assert period['used'] == 2 and period['reserved'] == live['reserved']
 
 
 @pytest.mark.asyncio
