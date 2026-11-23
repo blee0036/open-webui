@@ -55,11 +55,15 @@ class MemberConnector(aiohttp.TCPConnector):
         return await super()._resolve_host(address, port, traces)
 
 
+# Large provider headers (e.g. Set-Cookie chains) exceed aiohttp's 8 KiB default.
+OAUTH_MAX_FIELD_SIZE = 64 * 1024
+
+
 def oauth_http_session(*, restricted=None):
     restricted = personal_oauth.get() if restricted is None else restricted
     if restricted:
-        return aiohttp.ClientSession(connector=MemberConnector(), trust_env=False)
-    return aiohttp.ClientSession(trust_env=True)
+        return aiohttp.ClientSession(connector=MemberConnector(), trust_env=False, max_field_size=OAUTH_MAX_FIELD_SIZE)
+    return aiohttp.ClientSession(trust_env=True, max_field_size=OAUTH_MAX_FIELD_SIZE)
 
 
 def member_http_transport(*, version=2, verify=True):

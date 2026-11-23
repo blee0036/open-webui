@@ -26,16 +26,14 @@
 	import Usage from './Settings/Usage.svelte';
 	import ArchivedChats from './Settings/ArchivedChats.svelte';
 	import Personalization from './Settings/Personalization.svelte';
+	import PersonalMCP from '$lib/components/team/PersonalMCP.svelte';
+	import WrenchAlt from '../icons/WrenchAlt.svelte';
 	import Search from '../icons/Search.svelte';
-	import Connections from './Settings/Connections.svelte';
-	import Integrations from './Settings/Integrations.svelte';
 	import DatabaseSettings from '../icons/DatabaseSettings.svelte';
 	import SettingsAlt from '../icons/SettingsAlt.svelte';
-	import Link from '../icons/Link.svelte';
 	import UserCircle from '../icons/UserCircle.svelte';
 	import SoundHigh from '../icons/SoundHigh.svelte';
 	import InfoCircle from '../icons/InfoCircle.svelte';
-	import WrenchAlt from '../icons/WrenchAlt.svelte';
 	import Face from '../icons/Face.svelte';
 	import AppNotification from '../icons/AppNotification.svelte';
 	import AdjustmentsHorizontal from '../icons/AdjustmentsHorizontal.svelte';
@@ -59,6 +57,7 @@
 	import AdminInterface from '$lib/components/admin/Settings/Interface.svelte';
 	import AdminAudio from '$lib/components/admin/Settings/Audio.svelte';
 	import AdminImages from '$lib/components/admin/Settings/Images.svelte';
+	import AdminVideos from '$lib/components/admin/Settings/Videos.svelte';
 	import AdminPipelines from '$lib/components/admin/Settings/Pipelines.svelte';
 	import AdminDatabase from '$lib/components/admin/Settings/Database.svelte';
 
@@ -170,6 +169,7 @@
 		'admin:documents': $i18n.t('Tools'),
 		'admin:audio': $i18n.t('Tools'),
 		'admin:images': $i18n.t('Tools'),
+		'admin:videos': $i18n.t('Tools'),
 		'admin:web': $i18n.t('Tools'),
 		'admin:code-execution': $i18n.t('Tools'),
 		'admin:pipelines': $i18n.t('Tools'),
@@ -214,18 +214,6 @@
 			searchPrefixes: ['settings.personal.shortcuts.']
 		},
 		{
-			id: 'connections',
-			titleKey: 'settings.personal.connections.title',
-			title: $i18n.t('settings.personal.connections.title'),
-			searchPrefixes: ['settings.personal.connections.']
-		},
-		{
-			id: 'tools',
-			titleKey: 'settings.personal.tools.title',
-			title: $i18n.t('settings.personal.tools.title'),
-			searchPrefixes: ['settings.personal.tools.']
-		},
-		{
 			id: 'personalization',
 			titleKey: 'settings.personal.personalization.title',
 			title: $i18n.t('settings.personal.personalization.title'),
@@ -236,6 +224,12 @@
 			titleKey: 'settings.personal.audio.title',
 			title: $i18n.t('settings.personal.audio.title'),
 			searchPrefixes: ['settings.personal.audio.']
+		},
+		{
+			id: 'tools',
+			titleKey: 'Integrations',
+			title: $i18n.t('Integrations'),
+			searchPrefixes: []
 		},
 		{
 			id: 'data_controls',
@@ -337,6 +331,12 @@
 			searchPrefixes: ['settings.admin.images.']
 		},
 		{
+			id: 'admin:videos',
+			titleKey: 'settings.admin.videos.title',
+			title: $i18n.t('settings.admin.videos.title'),
+			searchPrefixes: ['settings.admin.videos.']
+		},
+		{
 			id: 'admin:web',
 			titleKey: 'settings.admin.web.title',
 			title: $i18n.t('settings.admin.web.title'),
@@ -392,18 +392,6 @@
 
 	const getAvailableSettings = (personalTabs: SettingsTab[], administratorTabs: SettingsTab[]) => {
 		const personalSettings = personalTabs.filter((tab) => {
-			if (tab.id === 'connections') {
-				return $config?.features?.enable_direct_connections;
-			}
-
-			if (tab.id === 'tools') {
-				return (
-					$config?.features?.enable_direct_integrations === true &&
-					($user?.role === 'admin' ||
-						($user?.role === 'user' && $user?.permissions?.features?.direct_tool_servers))
-				);
-			}
-
 			if (tab.id === 'interface') {
 				return $user?.role === 'admin' || ($user?.permissions?.settings?.interface ?? true);
 			}
@@ -419,6 +407,11 @@
 
 			if (tab.id === 'usage') {
 				return $visibleControls['settings.usage'];
+			}
+
+			if (tab.id === 'tools') {
+				// Team edition: personal MCP servers, kept after upstream removed direct integrations.
+				return $config?.features?.enable_team_workspaces === true;
 			}
 
 			if (tab.id === 'personalization') {
@@ -488,10 +481,7 @@
 	};
 
 	const getModels = async () => {
-		return await _getModels(
-			localStorage.token,
-			$config?.features?.enable_direct_connections ? ($settings?.directConnections ?? null) : null
-		);
+		return await _getModels(localStorage.token);
 	};
 
 	const adminConfigSaveHandler = async () => {
@@ -675,36 +665,6 @@
 								<Keyboard className="size-3.5" strokeWidth="2" />
 								<span>{$i18n.t('settings.personal.shortcuts.title')}</span>
 							</button>
-						{:else if tabId === 'connections'}
-							{#if $user?.role === 'admin' || ($user?.role === 'user' && $config?.features?.enable_direct_connections)}
-								<button
-									role="tab"
-									aria-controls="tab-connections"
-									aria-selected={selectedTab === 'connections'}
-									class={tabButtonClass(selectedTab === 'connections')}
-									on:click={() => {
-										selectTab('connections');
-									}}
-								>
-									<Link className="size-3.5" strokeWidth="2" />
-									<span>{$i18n.t('settings.personal.connections.title')}</span>
-								</button>
-							{/if}
-						{:else if tabId === 'tools'}
-							{#if $user?.role === 'admin' || ($user?.role === 'user' && $user?.permissions?.features?.direct_tool_servers)}
-								<button
-									role="tab"
-									aria-controls="tab-tools"
-									aria-selected={selectedTab === 'tools'}
-									class={tabButtonClass(selectedTab === 'tools')}
-									on:click={() => {
-										selectTab('tools');
-									}}
-								>
-									<WrenchAlt className="size-3.5" strokeWidth="2" />
-									<span>{$i18n.t('settings.personal.tools.title')}</span>
-								</button>
-							{/if}
 						{:else if tabId === 'personalization'}
 							<button
 								role="tab"
@@ -730,6 +690,19 @@
 							>
 								<SoundHigh className="size-3.5" strokeWidth="2" />
 								<span>{$i18n.t('settings.personal.audio.title')}</span>
+							</button>
+						{:else if tabId === 'tools'}
+							<button
+								role="tab"
+								aria-controls="tab-tools"
+								aria-selected={selectedTab === 'tools'}
+								class={tabButtonClass(selectedTab === 'tools')}
+								on:click={() => {
+									selectTab('tools');
+								}}
+							>
+								<WrenchAlt className="size-3.5" strokeWidth="2" />
+								<span>{$i18n.t('Integrations')}</span>
 							</button>
 						{:else if tabId === 'data_controls'}
 							<button
@@ -869,20 +842,6 @@
 				<Notifications {saveSettings} />
 			{:else if selectedTab === 'shortcuts'}
 				<Shortcuts {saveSettings} />
-			{:else if selectedTab === 'connections'}
-				<Connections
-					saveSettings={async (updated: Record<string, any>) => {
-						await saveSettings(updated);
-						toast.success($i18n.t('Settings saved successfully!'));
-					}}
-				/>
-			{:else if selectedTab === 'tools'}
-				<Integrations
-					saveSettings={async (updated: Record<string, any>) => {
-						await saveSettings(updated);
-						toast.success($i18n.t('Settings saved successfully!'));
-					}}
-				/>
 			{:else if selectedTab === 'personalization'}
 				<Personalization
 					{saveSettings}
@@ -897,6 +856,10 @@
 						toast.success($i18n.t('Settings saved successfully!'));
 					}}
 				/>
+			{:else if selectedTab === 'tools'}
+				<div id="tab-tools" class="flex h-full min-h-0 flex-col overflow-y-auto text-sm">
+					<PersonalMCP />
+				</div>
 			{:else if selectedTab === 'data_controls'}
 				<DataControls {saveSettings} />
 			{:else if selectedTab === 'usage'}
@@ -953,6 +916,12 @@
 				/>
 			{:else if selectedTab === 'admin:images'}
 				<AdminImages
+					on:save={() => {
+						toast.success($i18n.t('Settings saved successfully!'));
+					}}
+				/>
+			{:else if selectedTab === 'admin:videos'}
+				<AdminVideos
 					on:save={() => {
 						toast.success($i18n.t('Settings saved successfully!'));
 					}}
