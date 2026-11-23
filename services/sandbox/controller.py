@@ -58,7 +58,12 @@ SWAP = parse_bytes(os.environ.get('SANDBOX_SWAP', '0'))
 CPUS = float(os.environ.get('SANDBOX_CPUS', '1'))
 if MEMORY < 256 * 1024**2 or SWAP < 0 or CPUS <= 0:
     raise RuntimeError('SANDBOX_MEMORY must be at least 256m, SANDBOX_SWAP >= 0 and SANDBOX_CPUS > 0')
-TIMEOUT = int(os.environ.get('SANDBOX_EXECUTION_SECONDS', '120'))
+TIMEOUT = int(os.environ.get('SANDBOX_EXECUTION_SECONDS', '1800'))
+# open-terminal accepts at most 300 seconds per status wait, so longer runs are polled.
+STATUS_WAIT_LIMIT = 300
+# How long an Agent command may wait for a free slot or for this workspace's previous command.
+# WebUI has no tool-call timeout by default, so an unbounded wait looks like a hung command.
+AGENT_WAIT = float(os.environ.get('SANDBOX_AGENT_WAIT_SECONDS', '60'))
 MONITOR_SECONDS = float(os.environ.get('SANDBOX_MONITOR_SECONDS', '20'))
 state_dir = Path(os.environ.get('SANDBOX_STATE_DIR', '/state'))
 state_dir.mkdir(parents=True, exist_ok=True)
@@ -79,6 +84,10 @@ resumed = {}
 agent_waiters = {}
 agent_running = set()
 manual = set()
+# Why a workspace is under manual control: the user chose "Take manual control" (pinned, until
+# they resume or it stops), or a terminal or manual command is in flight (released when it ends).
+pinned = set()
+manual_holders = {}
 active = set()
 last_used = {}
 queue = []
@@ -110,20 +119,40 @@ async def docker_call(function, *args):
         raise
 
 
+class Busy(Exception):
+    """An Agent command that cannot run now; the message is returned to the model."""
+
+
+MANUAL_MESSAGE = (
+    'The user has taken manual control of this workspace, so Agent commands are paused. '
+    'Ask the user to choose "Resume Agent queue" on the Work environment page, then retry.'
+)
+
+
 @asynccontextmanager
 async def agent_execution(row):
     identifier = row['id']
+    if identifier in manual:
+        raise Busy(MANUAL_MESSAGE)
     lock = locks.setdefault(identifier, asyncio.Lock())
     agent_waiters[identifier] = agent_waiters.get(identifier, 0) + 1
     acquired = False
     try:
-        while True:
-            await resume_event(identifier).wait()
-            await lock.acquire()
-            if identifier not in manual:
-                acquired = True
-                break
-            lock.release()
+        try:
+            async with asyncio.timeout(AGENT_WAIT):
+                while True:
+                    await resume_event(identifier).wait()
+                    await lock.acquire()
+                    if identifier not in manual:
+                        acquired = True
+                        break
+                    lock.release()
+        except TimeoutError:
+            if identifier in manual:
+                raise Busy(MANUAL_MESSAGE) from None
+            raise Busy(
+                f'Another command in this workspace is still running after {AGENT_WAIT:g} seconds. Retry later.'
+            ) from None
         agent_running.add(identifier)
         yield
     finally:
@@ -139,6 +168,28 @@ async def take_manual_control(row):
     resume_event(row['id']).clear()
     async with locks.setdefault(row['id'], asyncio.Lock()):
         pass  # Confirm takeover only after the current Agent attempt finishes.
+
+
+def release_manual_control(identifier):
+    pinned.discard(identifier)
+    manual.discard(identifier)
+    resume_event(identifier).set()
+
+
+async def hold_manual_control(row):
+    """Pause Agent commands while a terminal or manual command is in use."""
+    manual_holders[row['id']] = manual_holders.get(row['id'], 0) + 1
+    try:
+        await take_manual_control(row)
+    except BaseException:
+        drop_manual_control(row['id'])
+        raise
+
+
+def drop_manual_control(identifier):
+    manual_holders[identifier] = max(0, manual_holders.get(identifier, 0) - 1)
+    if not manual_holders[identifier] and identifier not in pinned:
+        release_manual_control(identifier)
 
 
 @contextlib.contextmanager
@@ -317,13 +368,14 @@ def stop_runtime(row, recreate=False):
                 runtime.remove()  # Never remove the persistent home volume here.
 
 
-async def ensure(row):
+async def ensure(row, wait=None):
     # Exactly one waiter per workspace may enter the global capacity queue.
     async with lifecycle(row):
-        return await ensure_locked(row)
+        return await ensure_locked(row, wait)
 
 
-async def ensure_locked(row):
+async def ensure_locked(row, wait=None):
+    """Start the runtime; `wait` bounds the time spent queued for a free slot."""
     identifier = row['id']
     last_used[identifier] = time.monotonic()
     async with capacity:
@@ -332,14 +384,21 @@ async def ensure_locked(row):
                 queue.append(identifier)
             set_status(row, 'queued')
             try:
-                await capacity.wait_for(lambda: len(active) < MAX_RUNNING and queue and queue[0] == identifier)
+                async with asyncio.timeout(wait):
+                    await capacity.wait_for(lambda: len(active) < MAX_RUNNING and queue and queue[0] == identifier)
                 queue.pop(0)
                 active.add(identifier)
                 capacity.notify_all()
-            except BaseException:
+            except BaseException as error:
                 if identifier in queue:
                     queue.remove(identifier)
                     capacity.notify_all()
+                set_status(row, 'stopped')
+                if isinstance(error, TimeoutError):
+                    raise Busy(
+                        f'All {MAX_RUNNING} sandboxes are in use and none became free within {wait:g} seconds. '
+                        'Retry later.'
+                    ) from None
                 raise
     if not row.get('ip'):
         set_status(row, 'starting')
@@ -511,6 +570,7 @@ async def idle_monitor():
                     await docker_call(stop_runtime, row)
                     row.pop('ip', None)
                     set_status(row, 'stopped')
+                    release_manual_control(identifier)
                     async with capacity:
                         active.discard(identifier)
                         capacity.notify_all()
@@ -529,12 +589,24 @@ async def lifespan(app):
     state.execute("UPDATE workspace SET status='stopped', error=NULL")
     state.commit()
     task = asyncio.create_task(idle_monitor())
+    # Pull a new image now rather than inside the first start, which holds the global Docker lock.
+    pull = asyncio.create_task(asyncio.to_thread(prepull_images))
     try:
         yield
     finally:
-        task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
+        for background in (task, pull):
+            background.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await background
+
+
+def prepull_images():
+    try:
+        with client() as api:
+            for image in (IMAGE, HELPER_IMAGE):
+                ensure_image(api, image)
+    except Exception as error:  # The first start retries the pull.
+        print(f'Sandbox image pre-pull failed: {error}', flush=True)
 
 
 app = FastAPI(lifespan=lifespan, dependencies=[Depends(authenticate)])
@@ -585,10 +657,10 @@ async def control(user: str, project: str, form: Control):
             await asyncio.sleep(0)
     elif form.action in {'pause', 'resume'}:
         if form.action == 'pause':
+            pinned.add(identifier)
             await take_manual_control(row)
         else:
-            manual.discard(identifier)
-            resume_event(identifier).set()
+            release_manual_control(identifier)
     elif form.action in {'stop', 'recreate', 'offline', 'public', 'clear'}:
         if form.action == 'clear' and form.confirm != 'CLEAR MY WORKSPACE':
             raise HTTPException(400, 'Explicit clear confirmation required')
@@ -616,6 +688,8 @@ async def control(user: str, project: str, form: Control):
                 state.execute('UPDATE workspace SET public=? WHERE id=?', (row['public'], identifier))
             row.pop('ip', None)
             set_status(row, 'stopped')
+            # Its terminals are gone with the runtime, so nothing is left to hand back.
+            release_manual_control(identifier)
             async with capacity:
                 active.discard(identifier)
                 capacity.notify_all()
@@ -679,16 +753,16 @@ async def run_agent_command(row, session, base, headers, payload, query=None):
             process_id = result.get('id')
             if not process_id:
                 raise RuntimeError('Runtime returned no process ID')
-            if result.get('status') == 'running':
-                params = {'wait': str(TIMEOUT), **({k: v for k, v in (query or {}).items() if k == 'tail'})}
+            tail = {k: v for k, v in (query or {}).items() if k == 'tail'}
+            # The enclosing asyncio.timeout(TIMEOUT) ends the loop for a command that never finishes.
+            while result.get('status') == 'running':
+                params = {'wait': str(STATUS_WAIT_LIMIT), **tail}
                 async with session.get(
                     f'{base}/execute/{process_id}/status', params=params, headers=headers
                 ) as response:
                     result = await response.json()
                     if response.status >= 400:
                         raise RuntimeError('Runtime could not confirm command completion')
-            if result.get('status') == 'running':
-                raise TimeoutError()
             set_status(row, 'running')
             return result, 200
     except BaseException as error:
@@ -722,16 +796,23 @@ async def proxy(user: str, project: str, path: str, request: Request):
         if (answer := stopped_answer(row, key)) is not None:
             return answer
     agent = request.headers.get('x-agent-execution') == '1'
-    if not agent and request.method == 'POST' and path in {'execute', 'api/terminals/user/input'}:
-        await take_manual_control(row)
+    held = not agent and request.method == 'POST' and path in {'execute', 'api/terminals/user/input'}
+    if held:
+        await hold_manual_control(row)
     session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=TIMEOUT + 15))
     context = agent_execution(row) if agent else None
     entered = False
     try:
         if agent:
-            await context.__aenter__()
-            entered = True
-        ip = await ensure(row)
+            try:
+                await context.__aenter__()
+                entered = True
+                ip = await ensure(row, AGENT_WAIT)
+            except Busy as busy:
+                await session.close()
+                return JSONResponse({'status': 'busy', 'error': str(busy)}, status_code=503)
+        else:
+            ip = await ensure(row)
         params = list(request.query_params.multi_items())
         if agent and path == 'execute' and request.method == 'POST':
             result, code = await run_agent_command(
@@ -776,12 +857,15 @@ async def proxy(user: str, project: str, path: str, request: Request):
         last_used[identifier] = time.monotonic()
         if entered:
             await context.__aexit__(None, None, None)
+        if held:
+            drop_manual_control(identifier)
 
 
 @app.websocket('/r/{user}/{project}/{path:path}')
 async def socket(ws: WebSocket, user: str, project: str, path: str):
     await ws.accept()
     tasks = []
+    held = None
     try:
         browser_view = path.startswith('browser/view/')
         auth = {} if browser_view else await asyncio.wait_for(ws.receive_json(), 10)
@@ -796,7 +880,8 @@ async def socket(ws: WebSocket, user: str, project: str, path: str):
             return
         row = workspace(user, project)
         if path.startswith('api/terminals/'):
-            await take_manual_control(row)
+            await hold_manual_control(row)
+            held = row['id']
         ip = await ensure(row)
         headers = runtime_headers(row, ws)
         params = dict(ws.query_params)
@@ -833,6 +918,8 @@ async def socket(ws: WebSocket, user: str, project: str, path: str):
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+        if held:
+            drop_manual_control(held)
         with contextlib.suppress(Exception):
             await ws.close()
 

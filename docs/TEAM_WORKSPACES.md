@@ -142,7 +142,7 @@ async def pipe(self, body: dict, __model_request__=None):
 
 ## 沙盒和个人连接的安全边界
 
-默认每容器 1 CPU、2 GiB 内存、128 PIDs；Agent 单次 120 秒、空闲 10 分钟停机、全局最多 10 个容器（按 8 核 / 32 GB 设定，可用 `SANDBOX_IDLE_SECONDS`／`SANDBOX_MAX_RUNNING` 调整），超出按 FIFO 排队。内存／swap／CPU 可用 `SANDBOX_MEMORY`／`SANDBOX_SWAP`／`SANDBOX_CPUS` 调整。沙盒按需启动：功能、技能、工作目录、AGENTS.md 等只读探测在沙盒停止时由控制器用停止前刷新的缓存回答，不占名额。单工作区 Agent 串行，手动接管暂停新执行。启动失败／超时明确显示并保留卷，不回退到共享环境。
+默认每容器 1 CPU、2 GiB 内存、128 PIDs；Agent 单次最长 30 分钟（`SANDBOX_EXECUTION_SECONDS`）、空闲 10 分钟停机、全局最多 10 个容器（按 8 核 / 32 GB 设定，可用 `SANDBOX_IDLE_SECONDS`／`SANDBOX_MAX_RUNNING` 调整），超出按 FIFO 排队。内存／swap／CPU 可用 `SANDBOX_MEMORY`／`SANDBOX_SWAP`／`SANDBOX_CPUS` 调整。沙盒按需启动：功能、技能、工作目录、AGENTS.md 等只读探测在沙盒停止时由控制器用停止前刷新的缓存回答，不占名额。单工作区 Agent 串行；打开终端时暂停新执行，终端全部关闭后自动恢复；手动接管则保持到点"恢复 Agent 队列"或沙盒停止。启动失败／超时明确显示并保留卷，不回退到共享环境。
 
 只有控制器持有 Docker Socket。运行容器非 root、移除 Linux capabilities、禁止提权、只读根文件系统，不注入模型密钥、SSO Secret、WebUI 会话或 Docker Socket。短命网络助手仅在启动时设置防火墙，不执行用户代码。控制器 API Key 只在 WebUI 后端使用，不能公开给成员。
 

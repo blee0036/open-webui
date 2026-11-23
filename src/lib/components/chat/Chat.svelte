@@ -156,6 +156,7 @@
 
 	import Banner from '../common/Banner.svelte';
 	import MessageInput from '$lib/components/chat/MessageInput.svelte';
+	import AgentPausedBanner from '$lib/components/team/AgentPausedBanner.svelte';
 	import Messages from '$lib/components/chat/Messages.svelte';
 	import Navbar from '$lib/components/chat/Navbar.svelte';
 	import Sparkles from '$lib/components/layout/Sidebar/icons/Sparkles.svelte';
@@ -6311,6 +6312,11 @@
 									id={embedded ? messageInputDropzoneId : undefined}
 									class=" pb-2 {dragged ? 'z-0' : 'z-10'}"
 								>
+									<AgentPausedBanner
+										active={!!$config?.features?.enable_team_workspaces &&
+											$selectedTerminalId === 'managed'}
+										scope={$activeProjectId ?? 'personal'}
+									/>
 									<MessageInput
 										{selectedTerminalId}
 										{terminalSkills}
@@ -6433,6 +6439,11 @@
 									</div>
 								{/if}
 								<div id={embedded ? messageInputDropzoneId : undefined} class="pb-2 z-10">
+									<AgentPausedBanner
+										active={!!$config?.features?.enable_team_workspaces &&
+											$selectedTerminalId === 'managed'}
+										scope={$activeProjectId ?? 'personal'}
+									/>
 									<MessageInput
 										{selectedTerminalId}
 										{terminalSkills}

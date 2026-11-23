@@ -1,5 +1,6 @@
 """On-demand start and resource limits; no Docker required."""
 
+import asyncio
 import importlib.util
 import json
 import sys
@@ -16,7 +17,7 @@ from starlette.requests import Request  # noqa: E402
 def controller(monkeypatch, **env):
     monkeypatch.setenv('SANDBOX_STATE_DIR', tempfile.mkdtemp())
     monkeypatch.setenv('SANDBOX_CONTROLLER_KEY', 'test-key')
-    for key in ('SANDBOX_MEMORY', 'SANDBOX_SWAP', 'SANDBOX_CPUS'):
+    for key in ('SANDBOX_MEMORY', 'SANDBOX_SWAP', 'SANDBOX_CPUS', 'SANDBOX_AGENT_WAIT_SECONDS'):
         monkeypatch.delenv(key, raising=False)
     for key, value in env.items():
         monkeypatch.setenv(key, value)
@@ -99,3 +100,88 @@ def test_memory_swap_and_cpu_settings(monkeypatch):
     assert not module.runtime_matches_settings(runtime(2 * 1024**3, 0, 1))
     with pytest.raises(RuntimeError):
         controller(monkeypatch, SANDBOX_MEMORY='64m')
+
+
+def test_agent_commands_never_wait_without_bound(monkeypatch):
+    module = controller(monkeypatch, SANDBOX_AGENT_WAIT_SECONDS='0.05')
+    row = module.get_workspace('u1', 'personal')
+
+    async def enter():
+        async with module.agent_execution(row):
+            return 'ran'
+
+    async def scenario():
+        assert await enter() == 'ran'
+        # Manual control answers at once instead of waiting for someone to resume the queue.
+        module.manual.add(row['id'])
+        with pytest.raises(module.Busy, match='manual control'):
+            await enter()
+        module.manual.discard(row['id'])
+        # A previous command still holding the workspace bounds the wait.
+        async with module.locks[row['id']]:
+            with pytest.raises(module.Busy, match='still running'):
+                await enter()
+        assert module.agent_waiters[row['id']] == 0
+        # A full controller bounds the queue wait and leaves the workspace stopped, not queued.
+        module.active.update(f'other-{i}' for i in range(module.MAX_RUNNING))
+        with pytest.raises(module.Busy, match='sandboxes are in use'):
+            await module.ensure(row, 0.05)
+        assert module.queue == [] and module.get_workspace('u1', 'personal')['status'] == 'stopped'
+
+    asyncio.run(scenario())
+
+
+def test_long_commands_are_polled_within_the_runtime_wait_limit(monkeypatch):
+    module = controller(monkeypatch)
+    assert module.TIMEOUT == 1800
+    waits = []
+
+    class Response:
+        def __init__(self, body):
+            self.status, self.body = 200, body
+
+        async def json(self):
+            return self.body
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *error):
+            return False
+
+    class Session:
+        def post(self, url, **kwargs):
+            return Response({'id': 'p1', 'status': 'running'})
+
+        def get(self, url, params, **kwargs):
+            waits.append(float(params['wait']))
+            return Response({'id': 'p1', 'status': 'running' if len(waits) < 3 else 'done', 'exit_code': 0})
+
+    row = module.get_workspace('u1', 'personal')
+    result, code = asyncio.run(module.run_agent_command(row, Session(), 'http://runtime', {}, {'command': 'x'}))
+    assert code == 200 and result['status'] == 'done'
+    assert waits == [300, 300, 300]  # open-terminal rejects wait > 300
+
+
+def test_terminal_takeover_ends_when_the_last_terminal_closes(monkeypatch):
+    module = controller(monkeypatch)
+    row = module.get_workspace('u1', 'personal')
+    identifier = row['id']
+
+    async def scenario():
+        # Opening terminals pauses Agent commands only while one is still connected.
+        await module.hold_manual_control(row)
+        await module.hold_manual_control(row)
+        module.drop_manual_control(identifier)
+        assert identifier in module.manual
+        module.drop_manual_control(identifier)
+        assert identifier not in module.manual and module.resume_event(identifier).is_set()
+        # An explicit takeover outlives its terminals until the user resumes.
+        await module.control('u1', 'personal', module.Control(action='pause'))
+        await module.hold_manual_control(row)
+        module.drop_manual_control(identifier)
+        assert identifier in module.manual
+        await module.control('u1', 'personal', module.Control(action='resume'))
+        assert identifier not in module.manual and identifier not in module.pinned
+
+    asyncio.run(scenario())

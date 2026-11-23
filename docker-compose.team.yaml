@@ -47,6 +47,9 @@ services:
       ENABLE_DIRECT_CONNECTIONS: 'false'
       SANDBOX_CONTROLLER_URL: http://sandbox:8080
       SANDBOX_CONTROLLER_KEY: ${SANDBOX_CONTROLLER_KEY:?Set a controller-only secret}
+      # Upper bound for one tool call (unset = wait forever). Must exceed the sandbox's
+      # agent wait + start + SANDBOX_EXECUTION_SECONDS so the sandbox reports its own error first.
+      AIOHTTP_CLIENT_TIMEOUT_TOOL_SERVER: ${AIOHTTP_CLIENT_TIMEOUT_TOOL_SERVER:-2100}
       ENABLE_WEB_SEARCH: 'true'
       # DuckDuckGo first (bundled ddgs, no key); when it errors, is rate-limited or finds
       # nothing, the same query goes to the bundled SearXNG.
@@ -84,7 +87,10 @@ services:
       SANDBOX_CPUS: ${SANDBOX_CPUS:-1}
       SANDBOX_IDLE_SECONDS: ${SANDBOX_IDLE_SECONDS:-600}
       SANDBOX_ENABLE_BROWSER: ${SANDBOX_ENABLE_BROWSER:-false}
-      SANDBOX_EXECUTION_SECONDS: '120'
+      # Longest single Agent command (30 minutes).
+      SANDBOX_EXECUTION_SECONDS: ${SANDBOX_EXECUTION_SECONDS:-1800}
+      # An Agent command waits at most this long for a free slot or the workspace's previous command.
+      SANDBOX_AGENT_WAIT_SECONDS: ${SANDBOX_AGENT_WAIT_SECONDS:-60}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - team-sandbox-state:/state

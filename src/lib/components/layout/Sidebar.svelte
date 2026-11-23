@@ -321,7 +321,9 @@
 
 	$: pinnedItems =
 		$settings?.pinnedMenuItems ??
-		($config?.features?.enable_team_workspaces ? ['projects'] : DEFAULT_PINNED_ITEMS);
+		($config?.features?.enable_team_workspaces
+			? ['projects', 'environment']
+			: DEFAULT_PINNED_ITEMS);
 
 	$: isMenuItemVisible = (id) => {
 		switch (id) {

@@ -90,22 +90,24 @@ openssl rand -hex 32
 
 打开 `.env.team`，按下表填写：
 
-| 配置项                      | 填什么                                                                        |
-| --------------------------- | ----------------------------------------------------------------------------- |
-| `WEBUI_URL`                 | 员工访问的完整地址，如 `https://ai.example.com`（末尾不加 `/`）               |
-| `POSTGRES_PASSWORD`         | 第 1 个随机值，数据库密码                                                     |
-| `WEBUI_SECRET_KEY`          | 第 2 个随机值，平台主密钥，也用来加密 SSO 和 MCP 凭据                         |
-| `SANDBOX_CONTROLLER_KEY`    | 第 3 个随机值，WebUI 调用沙盒控制器时用的密钥                                 |
-| `SEARXNG_SECRET`            | 第 4 个随机值，搜索服务密钥                                                   |
-| `SANDBOX_EGRESS_DENY_HOSTS` | 员工访问平台用的域名，多个用逗号分隔，如 `ai.example.com`                     |
-| `SANDBOX_EGRESS_DENY_CIDRS` | 一般留空。见下方说明                                                          |
-| `SANDBOX_MAX_RUNNING`       | 最多同时运行的沙盒数，默认 `10`                                               |
-| `SANDBOX_MEMORY`            | 每个沙盒的内存上限，默认 `2g`                                                 |
-| `SANDBOX_SWAP`              | 每个沙盒在内存之外还能用多少 swap，默认 `0`（不用）。需要先在宿主机开 swap    |
-| `SANDBOX_CPUS`              | 每个沙盒的 CPU 核数，默认 `1`                                                 |
-| `SANDBOX_IDLE_SECONDS`      | 沙盒空闲多久后自动停止，默认 `600`（10 分钟）                                 |
-| `SANDBOX_ENABLE_BROWSER`    | 工作区自带浏览器（模型的浏览器工具和界面上的浏览器标签页），默认 `false` 关闭 |
-| `TEAM_IMAGE_TAG`            | 镜像版本，默认 `latest`。正式环境建议固定为 `sha-<提交号>` 或 `vX.Y.Z`        |
+| 配置项                       | 填什么                                                                        |
+| ---------------------------- | ----------------------------------------------------------------------------- |
+| `WEBUI_URL`                  | 员工访问的完整地址，如 `https://ai.example.com`（末尾不加 `/`）               |
+| `POSTGRES_PASSWORD`          | 第 1 个随机值，数据库密码                                                     |
+| `WEBUI_SECRET_KEY`           | 第 2 个随机值，平台主密钥，也用来加密 SSO 和 MCP 凭据                         |
+| `SANDBOX_CONTROLLER_KEY`     | 第 3 个随机值，WebUI 调用沙盒控制器时用的密钥                                 |
+| `SEARXNG_SECRET`             | 第 4 个随机值，搜索服务密钥                                                   |
+| `SANDBOX_EGRESS_DENY_HOSTS`  | 员工访问平台用的域名，多个用逗号分隔，如 `ai.example.com`                     |
+| `SANDBOX_EGRESS_DENY_CIDRS`  | 一般留空。见下方说明                                                          |
+| `SANDBOX_MAX_RUNNING`        | 最多同时运行的沙盒数，默认 `10`                                               |
+| `SANDBOX_MEMORY`             | 每个沙盒的内存上限，默认 `2g`                                                 |
+| `SANDBOX_SWAP`               | 每个沙盒在内存之外还能用多少 swap，默认 `0`（不用）。需要先在宿主机开 swap    |
+| `SANDBOX_CPUS`               | 每个沙盒的 CPU 核数，默认 `1`                                                 |
+| `SANDBOX_IDLE_SECONDS`       | 沙盒空闲多久后自动停止，默认 `600`（10 分钟）                                 |
+| `SANDBOX_AGENT_WAIT_SECONDS` | 模型执行命令时最多排队多久，默认 `60` 秒，超时直接告诉模型沙盒忙              |
+| `SANDBOX_EXECUTION_SECONDS`  | 模型单次执行命令最长多久，默认 `1800`（30 分钟）                              |
+| `SANDBOX_ENABLE_BROWSER`     | 工作区自带浏览器（模型的浏览器工具和界面上的浏览器标签页），默认 `false` 关闭 |
+| `TEAM_IMAGE_TAG`             | 镜像版本，默认 `latest`。正式环境建议固定为 `sha-<提交号>` 或 `vX.Y.Z`        |
 
 其余配置项保持默认即可：
 
@@ -459,9 +461,12 @@ docker compose --env-file .env.team -f docker-compose.team.yaml up -d
 ### 沙盒资源
 
 - 每个沙盒默认最多使用 1 CPU（`SANDBOX_CPUS`）、2 GiB 内存（`SANDBOX_MEMORY`）、128 个进程，默认不用 swap。
-- Agent 单次执行最长 120 秒。
+- 模型单次执行命令最长 30 分钟（`SANDBOX_EXECUTION_SECONDS`，默认 `1800`），超时后终止该命令，文件保留。执行期间不会被空闲停止。
 - 沙盒空闲 10 分钟（`SANDBOX_IDLE_SECONDS`）后自动停止，文件保留，下次使用时自动启动。
-- 最多同时运行 10 个沙盒（`SANDBOX_MAX_RUNNING`），超出的请求排队等待。
+- 最多同时运行 10 个沙盒（`SANDBOX_MAX_RUNNING`），超出的请求排队等待。模型执行的命令最多排队 60 秒（`SANDBOX_AGENT_WAIT_SECONDS`），等不到名额，或者同一工作区上一条命令还没跑完，就直接返回"沙盒忙"，不会一直卡着。
+- 用户打开终端时，模型的命令会暂停，等最后一个终端关闭后自动恢复。在工作环境页点"手动接管"则会一直暂停，直到点"恢复 Agent 队列"或沙盒停止。暂停期间模型的命令会立即返回"已被手动接管"，不会一直卡着。
+- WebUI 调用工具最多等 35 分钟（`AIOHTTP_CLIENT_TIMEOUT_TOOL_SERVER`，默认 `2100` 秒），比命令上限多留出排队和启动的时间。不设置时会一直等。改大 `SANDBOX_EXECUTION_SECONDS` 时要同时改大它。
+- 沙盒控制器启动时会在后台预先拉取沙盒镜像，避免镜像更新后的第一次启动临时拉镜像，拖慢所有人。
 - 沙盒按需启动。登录、打开对话、选中工作区、普通聊天都不会启动沙盒，也不占名额。模型第一次执行命令、读写文件，或者用户打开终端、浏览工作区文件时才会启动。唯一的例外是镜像更新后的第一次对话：需要启动一次沙盒读取工具列表，之后就不再需要。
 
 #### 给沙盒加 swap
