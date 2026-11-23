@@ -5044,6 +5044,7 @@
 	"Works together with top-k. A higher value (e.g., 0.95) will lead to more diverse text, while a lower value (e.g., 0.5) will generate more focused and conservative text.": "Works together with top-k. A higher value (e.g., 0.95) will lead to more diverse text, while a lower value (e.g., 0.5) will generate more focused and conservative text. Such balance.",
 	"Worksheets": "",
 	"Workspace": "Such Workspace",
+	"Workspace is under manual control; {{count}} Agent commands are waiting._one": "",
 	"Workspace is under manual control; {{count}} Agent commands are waiting._other": "",
 	"Workspace is under manual control; Agent commands are paused.": "",
 	"Workspace Models": "Workspace Models",
