@@ -41,6 +41,7 @@ async def clean_team_tables():
         if table.name
         in {
             'quota_entry',
+            'quota_usage_hourly',
             'quota_audit',
             'quota_period',
             'quota_account',

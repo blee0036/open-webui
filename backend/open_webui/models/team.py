@@ -101,7 +101,34 @@ class QuotaEntry(Base):
     detail = Column(Text, nullable=True)
     created_at = Column(BigInteger, nullable=False)
     settled_at = Column(BigInteger, nullable=True)
-    __table_args__ = (Index('ix_quota_entry_user_created', 'user_id', 'created_at'),)
+    # Normalized at settlement for the usage log and statistics (see utils/quota_usage.py).
+    prompt_tokens = Column(BigInteger, nullable=True)  # all input, cache reads and writes included
+    completion_tokens = Column(BigInteger, nullable=True)
+    cache_read_tokens = Column(BigInteger, nullable=True)
+    cache_write_tokens = Column(BigInteger, nullable=True)
+    total_tokens = Column(BigInteger, nullable=True)
+    cost = Column(BigInteger, nullable=True)  # micro-USD at the model price, whatever the plan unit
+    __table_args__ = (
+        Index('ix_quota_entry_user_created', 'user_id', 'created_at'),
+        Index('ix_quota_entry_created', 'created_at'),
+    )
+
+
+class QuotaUsageHourly(Base):
+    """Settled usage per user, model and UTC hour. Kept forever: request rows are purged."""
+
+    __tablename__ = 'quota_usage_hourly'
+    user_id = Column(Text, primary_key=True)
+    model_id = Column(Text, primary_key=True)
+    hour = Column(BigInteger, primary_key=True)  # epoch seconds, multiple of 3600
+    requests = Column(BigInteger, nullable=False, default=0)
+    prompt_tokens = Column(BigInteger, nullable=False, default=0)
+    completion_tokens = Column(BigInteger, nullable=False, default=0)
+    cache_read_tokens = Column(BigInteger, nullable=False, default=0)
+    cache_write_tokens = Column(BigInteger, nullable=False, default=0)
+    total_tokens = Column(BigInteger, nullable=False, default=0)
+    cost = Column(BigInteger, nullable=False, default=0)
+    __table_args__ = (Index('ix_quota_usage_hourly_hour', 'hour'),)
 
 
 class QuotaAudit(Base):

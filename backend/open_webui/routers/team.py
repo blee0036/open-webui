@@ -2,19 +2,28 @@
 
 import time
 import uuid
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from open_webui.env import WEBUI_NAME
 from open_webui.internal.db import get_async_db
-from open_webui.utils import quota_sync
+from open_webui.utils import quota_sync, quota_usage
 from open_webui.models.config import Config
-from open_webui.models.team import ModelPrice, QuotaAccount, QuotaAudit, QuotaEntry, QuotaPlan
+from open_webui.models.team import (
+    EnterpriseIdentity,
+    ModelPrice,
+    QuotaAccount,
+    QuotaAudit,
+    QuotaEntry,
+    QuotaPlan,
+)
 from open_webui.models.users import User
 from open_webui.utils.auth import get_admin_user, get_verified_user
 from open_webui.utils.quota_periods import validate_reset
 from open_webui.utils.quota_pricing import MAX_EXPRESSION_LENGTH, MAX_QUOTA, validate_price
 from open_webui.utils.quotas import add_bonus, assign_plan, quota_summary, record, settle
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-from sqlalchemy import and_, or_, select, update
+from sqlalchemy import and_, func, or_, select, update
 
 router = APIRouter()
 
@@ -251,7 +260,9 @@ async def users(query: str = '', limit: int = Query(50, ge=1, le=100), user=Depe
             stmt = stmt.where(
                 User.name.ilike(f'%{escaped}%', escape='\\') | User.email.ilike(f'%{escaped}%', escape='\\')
             )
-        return [dict(row._mapping) for row in (await db.execute(stmt)).all()]
+        rows = [dict(row._mapping) for row in (await db.execute(stmt)).all()]
+        orgs = await _orgs(db, [row['id'] for row in rows])
+    return [{**row, 'org': orgs.get(row['id'])} for row in rows]
 
 
 @router.get('/admin/users/{user_id}/quota')
@@ -461,3 +472,176 @@ async def reconcile(entry_id: str, form: ReconcileForm, user=Depends(get_admin_u
         value = record(entry)
     await settle(value, detail=form.reason, override_charge=form.charge, actor_id=user.id)
     return {'status': True}
+
+
+# ---------------------------------------------------------------------------
+# Usage statistics, request log and monthly report
+# ---------------------------------------------------------------------------
+
+MAX_RANGE = 366 * 86400
+LOG_FIELDS = (
+    'id',
+    'user_id',
+    'model_id',
+    'state',
+    'detail',
+    'created_at',
+    'settled_at',
+    'charged',
+    'reserved',
+    'prompt_tokens',
+    'completion_tokens',
+    'cache_read_tokens',
+    'cache_write_tokens',
+    'total_tokens',
+    'cost',
+)
+
+
+def _range(start: int | None, end: int | None):
+    end = int(end if end is not None else time.time()) + 1
+    start = int(start if start is not None else end - 7 * 86400)
+    if start >= end or end - start > MAX_RANGE:
+        raise HTTPException(400, 'Choose a range of at most one year')
+    return start, end
+
+
+async def _orgs(db, ids=None):
+    """Enterprise (SSO connect) IDs per user, joined: SSO members often have no email."""
+    stmt = select(EnterpriseIdentity.user_id, EnterpriseIdentity.connection_id).distinct()
+    if ids is not None:
+        if not ids:
+            return {}
+        stmt = stmt.where(EnterpriseIdentity.user_id.in_(list(ids)))
+    found = {}
+    for user_id, connection_id in (await db.execute(stmt)).all():
+        found.setdefault(user_id, []).append(connection_id)
+    return {user_id: '、'.join(sorted(values)) for user_id, values in found.items()}
+
+
+async def _names(db, ids):
+    if not ids:
+        return {}
+    stmt = select(User.id, User.name).where(User.id.in_(list(ids)))
+    orgs = await _orgs(db, ids)
+    return {row.id: (row.name, orgs.get(row.id)) for row in (await db.execute(stmt)).all()}
+
+
+async def _statistics(start, end, tz_offset, *, user_id=None, model_id=None, by_user=False):
+    async with get_async_db() as db:
+        rows = await quota_usage.hourly_rows(db, start, end, user_id=user_id, model_id=model_id)
+        result = quota_usage.statistics(rows, tz_offset_minutes=tz_offset, by_user=by_user)
+        names = await _names(db, {item['user_id'] for item in result['users']})
+    for item in result['users']:
+        item['name'], item['org'] = names.get(item['user_id'], (None, None))
+    return result
+
+
+async def _logs(start, end, page, page_size, *, user_id=None, model_id=None, state=None, with_users=False):
+    conditions = [QuotaEntry.created_at >= start, QuotaEntry.created_at < end]
+    if user_id:
+        conditions.append(QuotaEntry.user_id == user_id)
+    if model_id:
+        conditions.append(QuotaEntry.model_id == model_id)
+    if state:
+        conditions.append(QuotaEntry.state == state)
+    async with get_async_db() as db:
+        total = (await db.execute(select(func.count()).select_from(QuotaEntry).where(*conditions))).scalar_one()
+        rows = (
+            await db.execute(
+                select(QuotaEntry)
+                .where(*conditions)
+                .order_by(QuotaEntry.created_at.desc(), QuotaEntry.id)
+                .offset((page - 1) * page_size)
+                .limit(page_size)
+            )
+        ).scalars()
+        items = []
+        for row in rows:
+            item = {field: getattr(row, field) for field in LOG_FIELDS}
+            pricing = row.pricing or {}
+            item['unit'] = pricing.get('unit') or ('credits' if row.pricing else 'requests')
+            item['tier'] = (pricing.get('settlement') or {}).get('tier')
+            items.append(item)
+        names = await _names(db, {item['user_id'] for item in items}) if with_users else {}
+    for item in items if with_users else ():
+        item['name'], item['org'] = names.get(item['user_id'], (None, None))
+    return {'items': items, 'total': total, 'page': page, 'page_size': page_size}
+
+
+@router.get('/usage/me')
+async def my_usage(
+    start: int | None = None,
+    end: int | None = None,
+    tz_offset: int = Query(0, ge=-840, le=840),
+    model_id: str | None = Query(None, max_length=500),
+    user=Depends(get_verified_user),
+):
+    start, end = _range(start, end)
+    return await _statistics(start, end, tz_offset, user_id=user.id, model_id=model_id)
+
+
+@router.get('/usage/me/logs')
+async def my_usage_logs(
+    start: int | None = None,
+    end: int | None = None,
+    model_id: str | None = Query(None, max_length=500),
+    state: str | None = Query(None, max_length=20),
+    page: int = Query(1, ge=1, le=10_000),
+    page_size: int = Query(20, ge=1, le=100),
+    user=Depends(get_verified_user),
+):
+    start, end = _range(start, end)
+    return await _logs(start, end, page, page_size, user_id=user.id, model_id=model_id, state=state)
+
+
+@router.get('/admin/usage')
+async def admin_usage(
+    start: int | None = None,
+    end: int | None = None,
+    tz_offset: int = Query(0, ge=-840, le=840),
+    user_id: str | None = Query(None, max_length=100),
+    model_id: str | None = Query(None, max_length=500),
+    user=Depends(get_admin_user),
+):
+    start, end = _range(start, end)
+    return await _statistics(start, end, tz_offset, user_id=user_id, model_id=model_id, by_user=True)
+
+
+@router.get('/admin/usage/logs')
+async def admin_usage_logs(
+    start: int | None = None,
+    end: int | None = None,
+    user_id: str | None = Query(None, max_length=100),
+    model_id: str | None = Query(None, max_length=500),
+    state: str | None = Query(None, max_length=20),
+    page: int = Query(1, ge=1, le=10_000),
+    page_size: int = Query(20, ge=1, le=100),
+    user=Depends(get_admin_user),
+):
+    start, end = _range(start, end)
+    return await _logs(start, end, page, page_size, user_id=user_id, model_id=model_id, state=state, with_users=True)
+
+
+@router.get('/admin/usage/report')
+async def admin_usage_report(
+    month: str = Query(pattern=r'^\d{4}-(0[1-9]|1[0-2])$'),
+    tz: str = Query('Asia/Shanghai', max_length=64),
+    user=Depends(get_admin_user),
+):
+    try:
+        zone = ZoneInfo(tz)
+    except (ZoneInfoNotFoundError, ValueError):
+        raise HTTPException(400, 'Unknown time zone') from None
+    start, end = quota_usage.month_bounds(month, zone)
+    async with get_async_db() as db:
+        rows = await quota_usage.hourly_rows(db, int(start.timestamp()), int(end.timestamp()))
+        people = (await db.execute(select(User.id, User.name).where(User.role != 'pending'))).all()
+        orgs = await _orgs(db)
+    users = [(row.id, row.name, orgs.get(row.id)) for row in people]
+    body = quota_usage.render_monthly_report(WEBUI_NAME, month, zone, rows, users)
+    return Response(
+        body,
+        media_type='text/markdown; charset=utf-8',
+        headers={'Content-Disposition': f'attachment; filename="usage_report_{month}.md"'},
+    )

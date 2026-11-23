@@ -12,6 +12,7 @@
 		type QuotaPlan
 	} from '$lib/apis/team';
 	import EnterpriseAdmin from '$lib/components/team/EnterpriseAdmin.svelte';
+	import UsageDashboard from '$lib/components/team/usage/UsageDashboard.svelte';
 	import PriceSync from '$lib/components/team/PriceSync.svelte';
 	import { getBackendConfig } from '$lib/apis';
 	import { config } from '$lib/stores';
@@ -105,7 +106,7 @@
 <div class="mx-auto max-w-6xl px-5 py-6 md:px-10">
 	<h1 class="text-2xl font-semibold">{$i18n.t('Team & quota')}</h1>
 	<nav class="my-6 flex gap-1 overflow-x-auto border-b border-gray-200 dark:border-gray-800">
-		{#each [['packages', 'Packages'], ['members', 'Member quota'], ['pricing', 'Model pricing'], ['sso', 'Enterprise login'], ['audit', 'Adjustment history']] as item}
+		{#each [['packages', 'Packages'], ['members', 'Member quota'], ['usage', 'Usage'], ['pricing', 'Model pricing'], ['sso', 'Enterprise login'], ['audit', 'Adjustment history']] as item}
 			<button
 				class="whitespace-nowrap border-b-2 px-4 py-3 text-sm {tab === item[0]
 					? 'border-current font-medium'
@@ -457,6 +458,7 @@
 		<div class="mt-10 border-t border-gray-200 pt-8 dark:border-gray-800">
 			<PriceSync on:applied={() => action(load, false)} />
 		</div>
+	{:else if tab === 'usage'}<UsageDashboard admin />
 	{:else if tab === 'sso'}<EnterpriseAdmin />
 	{:else if tab === 'audit'}
 		<div class="mb-5 flex items-center justify-between gap-3">

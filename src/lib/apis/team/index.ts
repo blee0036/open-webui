@@ -85,9 +85,52 @@ export const quotaInput = (value: number | undefined, unit?: string) =>
 	unit === 'credits' ? (value ?? 0) / CREDITS_PER_USD : (value ?? 0);
 export const quotaStored = (input: number | string, unit?: string) =>
 	Math.round(Number(input) * (unit === 'credits' ? CREDITS_PER_USD : 1));
-// Ledger entries carry a frozen price snapshot only when they were charged in credits.
-export const entryUnit = (entry: { pricing?: unknown }) =>
-	entry?.pricing ? 'credits' : 'requests';
+// Newer entries record their plan unit; older ones carried a price snapshot only in credits.
+export const entryUnit = (entry: { pricing?: { unit?: string } | null }) =>
+	entry?.pricing?.unit ?? (entry?.pricing ? 'credits' : 'requests');
+export const usd = (micro: number | undefined, digits = 2) =>
+	'$' +
+	((micro ?? 0) / CREDITS_PER_USD).toLocaleString(undefined, {
+		minimumFractionDigits: digits,
+		maximumFractionDigits: Math.max(digits, 2)
+	});
+export const compactNumber = (value: number | undefined) =>
+	new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 }).format(
+		value ?? 0
+	);
+
+export type UsageTotals = {
+	requests: number;
+	prompt_tokens: number;
+	completion_tokens: number;
+	cache_read_tokens: number;
+	cache_write_tokens: number;
+	total_tokens: number;
+	cost: number;
+};
+export type UsageStatistics = {
+	summary: UsageTotals;
+	models: (UsageTotals & { model_id: string })[];
+	series: { day: string; models: Record<string, UsageTotals> }[];
+	/** org: enterprise (SSO connect) IDs; null for local accounts. */
+	users: (UsageTotals & { user_id: string; name?: string | null; org?: string | null })[];
+};
+export type UsageLog = Omit<UsageTotals, 'requests'> & {
+	id: string;
+	user_id: string;
+	name?: string | null;
+	org?: string | null;
+	model_id: string;
+	state: string;
+	detail?: string | null;
+	created_at: number;
+	settled_at?: number | null;
+	charged?: number | null;
+	reserved: number;
+	unit: string;
+	tier?: string | null;
+};
+export type UsageLogPage = { items: UsageLog[]; total: number; page: number; page_size: number };
 export const quotaDate = (value: number | null | undefined) =>
 	value ? new Date(value * 1000).toLocaleString() : '—';
 

@@ -20,6 +20,7 @@ from open_webui.utils.quota_pricing import (
     price_usage,
     request_snapshot,
 )
+from open_webui.utils.quota_usage import record_usage
 from sqlalchemy import and_, case, delete, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -248,17 +249,32 @@ async def reserve(
             return None
         default_id = await account_config(db, 'team.quota.default_plan_id')
         _, period = await current_period(db, account, default_id)
-        snapshot = None
         amount = 1
+        price = await db.get(ModelPrice, model_id)
+        if not price and price_model_id:
+            price = await db.get(ModelPrice, price_model_id)
+        # Request-count plans keep the price too, to show what each request would have cost.
+        snapshot = {'unit': period.unit, 'provider': provider, 'image_count': image_count}
+        if period.unit != 'credits' and price:
+            snapshot |= {
+                'model_id': price.model_id,
+                'expression': price.expression,
+                'multiplier': price.multiplier,
+                'revision': price.revision,
+                'credits_per_usd': 1_000_000,
+            }
+            try:
+                if request := request_snapshot(price.expression, payload, headers):
+                    snapshot['request'] = freeze_request(request)
+            except ValueError:
+                pass
         if period.unit == 'credits':
-            price = await db.get(ModelPrice, model_id)
-            if not price and price_model_id:
-                price = await db.get(ModelPrice, price_model_id)
             if not price:
                 raise HTTPException(
                     400, detail={'code': 'model_price_missing', 'message': 'Model price is not configured.'}
                 )
             snapshot = {
+                'unit': 'credits',
                 'model_id': price.model_id,
                 'expression': price.expression,
                 'multiplier': price.multiplier,
@@ -382,6 +398,8 @@ async def settle(entry, usage=None, detail=None, *, override_charge=None, actor_
         period.used += charge
         row.charged, row.state, row.usage, row.detail = charge, state, usage, detail
         row.settled_at = int(time.time())
+        if state == 'settled':
+            await record_usage(db, row, period.unit, usage)
         if actor_id:
             db.add(
                 QuotaAudit(
