@@ -30,7 +30,10 @@ def runtime(env, status='exited'):
     removed = []
     return SimpleNamespace(
         status=status,
-        attrs={'Config': {'Env': env}},
+        attrs={
+            'Config': {'Env': env},
+            'HostConfig': {'Memory': 2 * 1024**3, 'MemorySwap': 2 * 1024**3, 'NanoCpus': 1_000_000_000},
+        },
         remove=lambda: removed.append(True),
         removed=removed,
     )

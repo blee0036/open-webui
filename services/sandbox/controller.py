@@ -40,6 +40,24 @@ IDLE = int(os.environ.get('SANDBOX_IDLE_SECONDS', '600'))
 # Off by default: workspaces are offline unless a member enables public access.
 BROWSER = os.environ.get('SANDBOX_ENABLE_BROWSER', 'false').strip().lower() == 'true'
 BROWSER_ENV = 'OPEN_TERMINAL_ENABLE_BROWSER=' + ('true' if BROWSER else 'false')
+
+
+def parse_bytes(value):
+    """'2g', '512m', '1.5G' or a plain byte count -> bytes."""
+    text = str(value).strip().lower().removesuffix('b').removesuffix('i')
+    units = {'k': 1024, 'm': 1024**2, 'g': 1024**3, 't': 1024**4}
+    if text and text[-1] in units:
+        return int(float(text[:-1]) * units[text[-1]])
+    return int(text or 0)
+
+
+# Per-workspace limits. Swap comes from the host's swap space (a swap file on whichever disk
+# the host configured); SANDBOX_SWAP only caps how much of it one workspace may use.
+MEMORY = parse_bytes(os.environ.get('SANDBOX_MEMORY', '2g'))
+SWAP = parse_bytes(os.environ.get('SANDBOX_SWAP', '0'))
+CPUS = float(os.environ.get('SANDBOX_CPUS', '1'))
+if MEMORY < 256 * 1024**2 or SWAP < 0 or CPUS <= 0:
+    raise RuntimeError('SANDBOX_MEMORY must be at least 256m, SANDBOX_SWAP >= 0 and SANDBOX_CPUS > 0')
 TIMEOUT = int(os.environ.get('SANDBOX_EXECUTION_SECONDS', '120'))
 MONITOR_SECONDS = float(os.environ.get('SANDBOX_MONITOR_SECONDS', '20'))
 state_dir = Path(os.environ.get('SANDBOX_STATE_DIR', '/state'))
@@ -50,6 +68,10 @@ state.execute("""CREATE TABLE IF NOT EXISTS workspace (
     id TEXT PRIMARY KEY, user_id TEXT NOT NULL, project_id TEXT NOT NULL, api_key TEXT NOT NULL,
     public INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'stopped', error TEXT,
     UNIQUE(user_id, project_id))""")
+# Last answers to the read-only probes the UI and WebUI send before anyone uses a workspace.
+state.execute("""CREATE TABLE IF NOT EXISTS probe_cache (
+    scope TEXT NOT NULL, path TEXT NOT NULL, status INTEGER NOT NULL, body BLOB NOT NULL,
+    PRIMARY KEY(scope, path))""")
 state.commit()
 locks = {}
 lifecycle_locks = {}
@@ -208,7 +230,13 @@ def configure_firewall(api, row, runtime, network):
 
 
 def runtime_matches_settings(runtime):
-    return BROWSER_ENV in ((runtime.attrs.get('Config') or {}).get('Env') or [])
+    host = runtime.attrs.get('HostConfig') or {}
+    return (
+        BROWSER_ENV in ((runtime.attrs.get('Config') or {}).get('Env') or [])
+        and host.get('Memory') == MEMORY
+        and host.get('MemorySwap') == MEMORY + SWAP
+        and host.get('NanoCpus') == int(CPUS * 1_000_000_000)
+    )
 
 
 def start_runtime(row):
@@ -245,9 +273,10 @@ def start_runtime(row):
                 user='1000:1000',
                 volumes={volume.name: {'bind': '/home/user', 'mode': 'rw'}},
                 network=network_name,
-                nano_cpus=1_000_000_000,
-                mem_limit='2g',
-                memswap_limit='2g',
+                nano_cpus=int(CPUS * 1_000_000_000),
+                mem_limit=MEMORY,
+                # memory + swap; equal to mem_limit means no swap.
+                memswap_limit=MEMORY + SWAP,
                 pids_limit=128,
                 cap_drop=['ALL'],
                 security_opt=['no-new-privileges:true'],
@@ -359,6 +388,107 @@ def workspace(user, project):
     return workspaces[key]
 
 
+# ---------------------------------------------------------------------------
+# On-demand start: read-only probes never start a runtime.
+#
+# Opening a chat makes the UI ask for features, skills and the working directory, and every
+# message makes WebUI read the tool spec and AGENTS.md. A stopped workspace answers these from
+# the last values seen while it ran. They cannot go stale while it is stopped: only the
+# runtime writes to the home volume, and the cache is refreshed just before each stop.
+# Commands, terminals, file browsing and uploads still start the runtime.
+# ---------------------------------------------------------------------------
+HOME = '/home/user'
+IMAGE_SCOPE = f'image:{IMAGE}:{BROWSER_ENV}'
+IMAGE_PROBES = {'openapi.json', 'api/config'}  # Same for every runtime of this image.
+# Literally true of a stopped runtime.
+STOPPED_ANSWERS = {'ports': {'ports': []}, 'api/terminals': [], 'browser/sessions': []}
+DEFAULT_PROBES = ('skills', 'files/cwd')
+
+
+def probe_key(path, request):
+    """Cache key for a read-only probe, or None for a request that needs the runtime."""
+    if request.method != 'GET':
+        return None
+    query = request.url.query
+    if path in IMAGE_PROBES or path in STOPPED_ANSWERS or (path in DEFAULT_PROBES and not query):
+        return path
+    if path == 'files/read' and str(request.query_params.get('path', '')).endswith('/AGENTS.md'):
+        return f'{path}?{query}'
+    return None
+
+
+def probe_scope(row, key):
+    return IMAGE_SCOPE if key in IMAGE_PROBES else row['id']
+
+
+def cache_get(scope, key):
+    return state.execute('SELECT status, body FROM probe_cache WHERE scope=? AND path=?', (scope, key)).fetchone()
+
+
+def cache_put(scope, key, status, body):
+    state.execute(
+        'INSERT OR REPLACE INTO probe_cache (scope, path, status, body) VALUES (?,?,?,?)', (scope, key, status, body)
+    )
+    state.commit()
+
+
+def forget_workspace_probes(identifier):
+    state.execute('DELETE FROM probe_cache WHERE scope=?', (identifier,))
+    state.commit()
+
+
+def stopped_answer(row, key):
+    """Answer for a stopped runtime, or None when it has to start (first run of this image)."""
+    if key in STOPPED_ANSWERS:
+        return Response(json.dumps(STOPPED_ANSWERS[key]), 200, media_type='application/json')
+    cached = cache_get(probe_scope(row, key), key)
+    if cached is not None:
+        return Response(cached['body'], cached['status'], media_type='application/json')
+    if key in IMAGE_PROBES:
+        return None
+    if key == 'skills':
+        body, status = [], 200
+    elif key == 'files/cwd':
+        body, status = {'cwd': HOME, 'home': HOME, 'root': {'path': HOME, 'label': 'Home'}}, 200
+    else:  # AGENTS.md in a workspace that has never run
+        body, status = {'detail': 'File not found'}, 404
+    return Response(json.dumps(body), status, media_type='application/json')
+
+
+async def fetch_probe(row, key, headers):
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5)) as session:
+        async with session.get(f'http://{row["ip"]}:8000/{key}', headers=headers, allow_redirects=False) as upstream:
+            return upstream.status, await upstream.read()
+
+
+async def running_probe(row, key, request):
+    """Forward a probe to a running runtime without counting it as use, and remember the answer."""
+    headers = runtime_headers(row, request)
+    status, body = await fetch_probe(row, key, headers)
+    # A session's cwd is not what a restarted runtime reports, so only sessionless answers are kept.
+    if key not in STOPPED_ANSWERS and status in (200, 404) and not (key == 'files/cwd' and 'x-session-id' in headers):
+        cache_put(probe_scope(row, key), key, status, body)
+    return Response(body, status, media_type='application/json')
+
+
+async def refresh_probes(row):
+    """Re-read this workspace's probes from the runtime right before it stops."""
+    if not row.get('ip'):
+        return
+    keys = {r['path'] for r in state.execute('SELECT path FROM probe_cache WHERE scope=?', (row['id'],))}
+    headers = {'Authorization': 'Bearer ' + row['api_key'], 'X-User-Id': row['user_id']}
+    for key in keys | set(DEFAULT_PROBES):
+        try:
+            status, body = await fetch_probe(row, key, headers)
+            if status not in (200, 404):
+                raise RuntimeError(status)
+            cache_put(row['id'], key, status, body)
+        except Exception:
+            # Better to answer "not found" than to serve a stale file.
+            state.execute('DELETE FROM probe_cache WHERE scope=? AND path=?', (row['id'], key))
+            state.commit()
+
+
 async def authenticate(request: HTTPConnection):
     if request.scope['type'] == 'websocket':
         return  # First-message authentication is performed before any runtime is resolved.
@@ -377,6 +507,7 @@ async def idle_monitor():
                     # Recheck after acquiring locks: another request may have used it.
                     if time.monotonic() - last_used.get(identifier, 0) <= IDLE:
                         continue
+                    await refresh_probes(row)
                     await docker_call(stop_runtime, row)
                     row.pop('ip', None)
                     set_status(row, 'stopped')
@@ -392,6 +523,8 @@ async def lifespan(app):
     # Stop only this controller's labelled runtimes; preserve all volumes on recovery.
     with client() as api:
         for container in api.containers.list(filters={'label': [f'{key}={value}' for key, value in LABEL.items()]}):
+            # Stopped without a final refresh, so its probe answers may be stale.
+            forget_workspace_probes(container.name.removeprefix(NAMESPACE + '-ws-'))
             await asyncio.to_thread(container.stop, timeout=5)
     state.execute("UPDATE workspace SET status='stopped', error=NULL")
     state.commit()
@@ -465,8 +598,10 @@ async def control(user: str, project: str, form: Control):
                 with contextlib.suppress(asyncio.CancelledError):
                     await task
         async with lock, lifecycle(row), docker_lock:
+            await refresh_probes(row)
             await docker_call(stop_runtime, row, form.action != 'stop')
             if form.action == 'clear':
+                forget_workspace_probes(identifier)
                 with client() as api:
                     try:
                         volume = api.volumes.get(name(row) + '-home')
@@ -524,6 +659,7 @@ async def abort_execution(row, session, base, headers, process_id=None, *, timeo
     # Stopping the container also reaps detached children and covers cancellation
     # during the initial POST, before a process ID was returned. Files stay mounted.
     async with lifecycle(row), docker_lock:
+        await refresh_probes(row)
         await docker_call(stop_runtime, row)
         row.pop('ip', None)
         set_status(row, 'timeout' if timeout else 'stopped')
@@ -579,6 +715,12 @@ async def proxy(user: str, project: str, path: str, request: Request):
         raise HTTPException(403, 'Unmetered model agents and runtime administration are disabled')
     row = workspace(user, project)
     identifier = row['id']
+    if (key := probe_key(path, request)) is not None:
+        if row.get('ip'):
+            with contextlib.suppress(aiohttp.ClientError, TimeoutError):
+                return await running_probe(row, key, request)
+        if (answer := stopped_answer(row, key)) is not None:
+            return answer
     agent = request.headers.get('x-agent-execution') == '1'
     if not agent and request.method == 'POST' and path in {'execute', 'api/terminals/user/input'}:
         await take_manual_control(row)

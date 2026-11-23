@@ -100,6 +100,9 @@ openssl rand -hex 32
 | `SANDBOX_EGRESS_DENY_HOSTS` | 员工访问平台用的域名，多个用逗号分隔，如 `ai.example.com`                     |
 | `SANDBOX_EGRESS_DENY_CIDRS` | 一般留空。见下方说明                                                          |
 | `SANDBOX_MAX_RUNNING`       | 最多同时运行的沙盒数，默认 `10`                                               |
+| `SANDBOX_MEMORY`            | 每个沙盒的内存上限，默认 `2g`                                                 |
+| `SANDBOX_SWAP`              | 每个沙盒在内存之外还能用多少 swap，默认 `0`（不用）。需要先在宿主机开 swap    |
+| `SANDBOX_CPUS`              | 每个沙盒的 CPU 核数，默认 `1`                                                 |
 | `SANDBOX_IDLE_SECONDS`      | 沙盒空闲多久后自动停止，默认 `600`（10 分钟）                                 |
 | `SANDBOX_ENABLE_BROWSER`    | 工作区自带浏览器（模型的浏览器工具和界面上的浏览器标签页），默认 `false` 关闭 |
 | `TEAM_IMAGE_TAG`            | 镜像版本，默认 `latest`。正式环境建议固定为 `sha-<提交号>` 或 `vX.Y.Z`        |
@@ -455,10 +458,43 @@ docker compose --env-file .env.team -f docker-compose.team.yaml up -d
 
 ### 沙盒资源
 
-- 每个沙盒最多使用 1 CPU、2 GiB 内存、128 个进程。
+- 每个沙盒默认最多使用 1 CPU（`SANDBOX_CPUS`）、2 GiB 内存（`SANDBOX_MEMORY`）、128 个进程，默认不用 swap。
 - Agent 单次执行最长 120 秒。
 - 沙盒空闲 10 分钟（`SANDBOX_IDLE_SECONDS`）后自动停止，文件保留，下次使用时自动启动。
-- 最多同时运行 10 个沙盒（`SANDBOX_MAX_RUNNING`），超出的请求排队等待。只有运行代码才会占用名额，单纯聊天不占用。
+- 最多同时运行 10 个沙盒（`SANDBOX_MAX_RUNNING`），超出的请求排队等待。
+- 沙盒按需启动。登录、打开对话、选中工作区、普通聊天都不会启动沙盒，也不占名额。模型第一次执行命令、读写文件，或者用户打开终端、浏览工作区文件时才会启动。唯一的例外是镜像更新后的第一次对话：需要启动一次沙盒读取工具列表，之后就不再需要。
+
+#### 给沙盒加 swap
+
+内存不够又想多跑几个沙盒时，可以让沙盒在内存用满后使用 swap。容器本身没有独立的 swap 设备，用的是宿主机的 swap，所以先在宿主机上建 swap 文件，放在哪块盘由 swap 文件的路径决定。下面以挂在 `/data` 的数据盘为例，建一个 32 GB 的 swap：
+
+```bash
+sudo fallocate -l 32G /data/swapfile
+sudo chmod 600 /data/swapfile
+sudo mkswap /data/swapfile
+sudo swapon /data/swapfile
+echo '/data/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab   # 开机自动启用
+swapon --show                                                     # 确认已启用
+```
+
+然后在 `.env.team` 里设置每个沙盒能用多少 swap，并重启沙盒控制器：
+
+```bash
+SANDBOX_MEMORY=2g
+SANDBOX_SWAP=4g          # 每个沙盒最多 2 GiB 内存 + 4 GiB swap
+SANDBOX_MAX_RUNNING=16   # 可以按需调大
+```
+
+```bash
+docker compose --env-file .env.team -f docker-compose.team.yaml up -d sandbox
+```
+
+说明：
+
+- 已经停止的沙盒下次启动时会按新设置重建容器，工作区文件保留。正在运行的沙盒要等它空闲停止后才生效。
+- 所有沙盒加起来用的 swap 不会超过宿主机 swap 的总大小，宿主机 swap 用完后沙盒还是会因内存不足被终止。宿主机 swap 建议不小于 `SANDBOX_SWAP × SANDBOX_MAX_RUNNING` 的一半。
+- swap 在磁盘上，用到 swap 时程序会明显变慢。云盘建议用 ESSD 这类高性能盘。
+- 运行 `docker info`，如果输出里有 `WARNING: No swap limit support`，说明内核没开 swap 限制，`SANDBOX_SWAP` 不会生效。Alibaba Cloud Linux 3、Ubuntu 22.04 及以上默认都支持。
 
 ### 升级建议
 
