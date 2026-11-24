@@ -848,6 +848,12 @@ try:
     QUOTA_ENTRY_RETENTION_DAYS = max(0, int(os.getenv('QUOTA_ENTRY_RETENTION_DAYS', '90')))
 except ValueError:
     QUOTA_ENTRY_RETENTION_DAYS = 90
+# Extra attempts when a model upstream fails before any output: an error status, a dropped
+# connection, an empty reply, or a stream that closes before its first token. 0 disables.
+try:
+    MODEL_REQUEST_RETRIES = max(0, int(os.getenv('MODEL_REQUEST_RETRIES', '3')))
+except ValueError:
+    MODEL_REQUEST_RETRIES = 3
 BYPASS_RETRIEVAL_ACCESS_CONTROL = os.getenv('BYPASS_RETRIEVAL_ACCESS_CONTROL', 'False').lower() == 'true'
 # Second web search engine tried when the configured one fails or finds nothing (e.g. 'searxng').
 WEB_SEARCH_FALLBACK_ENGINE = os.getenv('WEB_SEARCH_FALLBACK_ENGINE', '').strip().lower()

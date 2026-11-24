@@ -43,9 +43,39 @@ async def model_server():
         if request.path == '/stream':
             response = web.StreamResponse(headers={'Content-Type': 'text/event-stream'})
             await response.prepare(request)
+            text = b'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n'
             event = b'data: {"usage":{"prompt_tokens":12,"completion_tokens":3}}\n\n'
-            for chunk in (event[:11], event[11:31], event[31:], b'data: [DONE]\n\n'):
+            for chunk in (text, event[:11], event[11:31], event[31:], b'data: [DONE]\n\n'):
                 await response.write(chunk)
+            return response
+        if request.path.startswith('/flaky/'):
+            # /flaky/<failures>/<how>: the first <failures> calls fail, later ones succeed.
+            _, _, failures, how = request.path.split('/')
+            calls = sum(1 for item in received if item == body)
+            if calls <= int(failures):
+                if how == 'status':
+                    return web.json_response({'error': {'message': 'overloaded'}}, status=502)
+                if how == 'empty-json':
+                    return web.json_response({'choices': [{'message': {'content': ''}, 'finish_reason': 'stop'}]})
+                response = web.StreamResponse(headers={'Content-Type': 'text/event-stream'})
+                await response.prepare(request)
+                if how == 'empty-stream':
+                    await response.write(b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n')
+                    await response.write(b'data: [DONE]\n\n')
+                    return response
+                await response.write(b': keep-alive\n\n')
+                request.transport.close()  # how == 'drop': closed before the first token
+                return response
+            response = web.StreamResponse(headers={'Content-Type': 'text/event-stream'})
+            await response.prepare(request)
+            await response.write(b'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n')
+            await response.write(b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n')
+            return response
+        if request.path == '/cut':
+            response = web.StreamResponse(headers={'Content-Type': 'text/event-stream'})
+            await response.prepare(request)
+            await response.write(b'data: {"choices":[{"delta":{"content":"half"}}]}\n\n')
+            request.transport.close()
             return response
         if request.path == '/binary':
             return web.Response(body=b'ID3test-audio')
@@ -384,3 +414,64 @@ def test_realtime_multiple_manual_commits_and_inflight_clear_preserve_exact_audi
     segments.observe({'type': 'input_audio_buffer.speech_started', 'item_id': 'vad', 'audio_start_ms': 2000})
     segments.observe({'type': 'input_audio_buffer.speech_stopped', 'item_id': 'vad', 'audio_end_ms': 3000})
     assert segments.observe({'type': 'input_audio_buffer.committed', 'item_id': 'vad'})[1] == chunks[2]
+
+
+@pytest.fixture
+def no_backoff(monkeypatch):
+    from open_webui.utils import quota_transport
+
+    monkeypatch.setattr(quota_transport, 'RETRY_BASE_SECONDS', 0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('how', ['status', 'empty-json', 'empty-stream', 'drop'])
+async def test_failed_upstream_attempts_are_retried(model_server, no_backoff, how):
+    await enable('credits')
+    url, received = model_server
+    response = await model_request(
+        await get_session(),
+        None,
+        SimpleNamespace(id='retry-' + how),
+        model_id='test',
+        method='POST',
+        url=f'{url}/flaky/2/{how}',
+        json={'model': 'test', 'stream': True},
+    )
+    body = b''.join([chunk async for chunk in stream_wrapper(response)])
+    assert response.status == 200 and b'"ok"' in body and b'incomplete' not in body
+    assert len(received) == 3
+    async with get_async_db() as db:
+        rows = (await db.execute(select(QuotaEntry))).scalars().all()
+    # Every try is its own entry; the failed ones settle at zero.
+    assert len(rows) == 3 and {row.state for row in rows} == {'settled'}
+    assert sorted(row.charged for row in rows)[:2] == [0, 0]
+
+
+@pytest.mark.asyncio
+async def test_retries_stop_after_the_limit(model_server, no_backoff, monkeypatch):
+    from open_webui.utils import quota_transport
+
+    monkeypatch.setattr(quota_transport, 'MODEL_REQUEST_RETRIES', 1)
+    url, received = model_server
+    response = await model_request(
+        await get_session(),
+        None,
+        SimpleNamespace(id='limit'),
+        model_id='test',
+        method='POST',
+        url=f'{url}/flaky/5/status',
+    )
+    assert response.status == 502 and len(received) == 2
+    await cleanup_response(response)
+
+
+@pytest.mark.asyncio
+async def test_stream_cut_after_output_ends_with_an_error_event(model_server, no_backoff):
+    url, received = model_server
+    response = await model_request(
+        await get_session(), None, SimpleNamespace(id='cut'), model_id='test', method='POST', url=f'{url}/cut'
+    )
+    lines = [line async for line in stream_wrapper(response)]
+    body = b''.join(lines)
+    assert len(received) == 1 and b'"half"' in body
+    assert json.loads(body.strip().split(b'\n')[-1][5:])['error']['type'] == 'upstream_incomplete'
