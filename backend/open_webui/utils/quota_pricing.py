@@ -78,7 +78,29 @@ class Node:
             yield from child.walk()
 
 
-_PUNCT = ('||', '&&', '==', '!=', '<=', '>=', '**', '(', ')', ',', '?', ':', '+', '-', '*', '/', '%', '<', '>', '!', '^')
+_PUNCT = (
+    '||',
+    '&&',
+    '==',
+    '!=',
+    '<=',
+    '>=',
+    '**',
+    '(',
+    ')',
+    ',',
+    '?',
+    ':',
+    '+',
+    '-',
+    '*',
+    '/',
+    '%',
+    '<',
+    '>',
+    '!',
+    '^',
+)
 _WORD_OPS = {'and': '&&', 'or': '||', 'not': '!'}
 
 
@@ -309,7 +331,9 @@ class Compiled:
         names = [node for node in tree.walk()]
         self.used = {node.value for node in names if node.kind == 'name' and node.value in VARIABLES}
         self.fixed = any(node.kind == 'call' and node.value == 'fixed' for node in names)
-        self.params = sorted({node.children[0].value for node in names if node.kind == 'call' and node.value == 'param'})
+        self.params = sorted(
+            {node.children[0].value for node in names if node.kind == 'call' and node.value == 'param'}
+        )
         self.headers = sorted(
             {node.children[0].value.strip().lower() for node in names if node.kind == 'call' and node.value == 'header'}
         )
@@ -630,8 +654,10 @@ def usage_semantic(raw: dict, provider: str) -> str:
         return 'ollama'
     if raw.get('usage_semantic') == 'anthropic':
         return 'anthropic'
-    if provider == 'anthropic' and 'prompt_tokens' not in raw and (
-        'cache_read_input_tokens' in raw or 'cache_creation_input_tokens' in raw or 'input_tokens' in raw
+    if (
+        provider == 'anthropic'
+        and 'prompt_tokens' not in raw
+        and ('cache_read_input_tokens' in raw or 'cache_creation_input_tokens' in raw or 'input_tokens' in raw)
     ):
         return 'anthropic'
     return 'openai'
@@ -696,7 +722,12 @@ def canonical_usage(raw: dict, provider: str = 'openai') -> dict:
             usage['claude_1h'] = _get(raw, 'claude_cache_creation_1_h_tokens')
         return usage
     details = _details(raw)
-    output = raw.get('completion_tokens_details') or raw.get('output_tokens_details') or raw.get('output_token_details') or {}
+    output = (
+        raw.get('completion_tokens_details')
+        or raw.get('output_tokens_details')
+        or raw.get('output_token_details')
+        or {}
+    )
     usage['prompt'] = _get(raw, 'prompt_tokens') or _get(raw, 'input_tokens')
     usage['completion'] = _get(raw, 'completion_tokens') or _get(raw, 'output_tokens')
     usage['cached'] = _get(details, 'cached_tokens') or _get(raw, 'prompt_cache_hit_tokens')
@@ -740,7 +771,12 @@ def billing_tokens(raw: dict, used: set[str], provider: str = 'openai') -> dict[
     details = usage['cached_details']
     if 'img_cr' in used and not claude and details and details.get('image_tokens') is not None:
         cached_image, cached, image = details['image_tokens'], usage['cached'], usage['image']
-        valid = 0 <= cached_image <= cached and image >= cached_image and cached <= p and image <= p - (cached - cached_image)
+        valid = (
+            0 <= cached_image <= cached
+            and image >= cached_image
+            and cached <= p
+            and image <= p - (cached - cached_image)
+        )
         remaining = cached - cached_image
         for key in ('text_tokens', 'audio_tokens'):
             count = details.get(key)
@@ -755,9 +791,7 @@ def billing_tokens(raw: dict, used: set[str], provider: str = 'openai') -> dict[
             img -= img_cr
     img_o, ao = usage['image_out'], usage['audio_out']
 
-    p, c, cr, cc, cc1h, img, img_cr, ai, img_o, ao = map(
-        Decimal, (p, c, cr, cc, cc1h, img, img_cr, ai, img_o, ao)
-    )
+    p, c, cr, cc, cc1h, img, img_cr, ai, img_o, ao = map(Decimal, (p, c, cr, cc, cc1h, img, img_cr, ai, img_o, ao))
     cc12h = Decimal(0)
     length = p + cr + cc + cc1h if claude else p
     if claude:
@@ -915,7 +949,12 @@ _SMOKE_VECTORS = [
             'cached_tokens_details': {'image_tokens': 200},
         },
     },
-    {'prompt_tokens': 1000, 'completion_tokens': 50, 'prompt_tokens_details': {'audio_tokens': 200}, 'completion_tokens_details': {'audio_tokens': 50}},
+    {
+        'prompt_tokens': 1000,
+        'completion_tokens': 50,
+        'prompt_tokens_details': {'audio_tokens': 200},
+        'completion_tokens_details': {'audio_tokens': 50},
+    },
     {'prompt_tokens': 2_147_483_647, 'completion_tokens': 0},
 ]
 _SMOKE_REQUESTS = [
@@ -940,3 +979,100 @@ def validate_price(expression: str, multiplier='1'):
             request = request_snapshot(expression, sample.get('body'), sample.get('headers'))
             for count in (1, MAX_IMAGE_COUNT):
                 price_usage(expression, vector, multiplier=multiplier, image_count=count, request=request)
+
+
+# --------------------------------------------------------------------------- summaries
+
+_LEN_COMPARE = {'<', '<=', '>', '>='}
+_MILLION = 1_000_000
+
+
+def _len_thresholds(tree) -> list[int]:
+    """Context sizes where a `len` comparison switches tiers, e.g. 200000 in `len <= 200000 ? ...`."""
+    found = set()
+    for node in tree.walk():
+        if node.kind != 'bin' or node.value not in _LEN_COMPARE:
+            continue
+        left, right = node.children
+        for name, number in ((left, right), (right, left)):
+            value = _number_literal(number)
+            if name.kind == 'name' and name.value == 'len' and value is not None and 0 < value < MAX_QUOTA:
+                found.add(int(value))
+    return sorted(found)
+
+
+def _usd(expression, multiplier, usage, provider='openai', image_count=1) -> Decimal:
+    result = price_usage(
+        expression, usage, provider=provider, multiplier=multiplier, credits_per_usd=1, image_count=image_count
+    )
+    return Decimal(result['usd'])
+
+
+def _rates(expression, multiplier, context) -> dict:
+    """USD per million input / output tokens for a request whose whole input is `context` tokens."""
+    prompt = _usd(expression, multiplier, {'prompt_tokens': context, 'completion_tokens': 0})
+    both = _usd(expression, multiplier, {'prompt_tokens': context, 'completion_tokens': _MILLION})
+    return {'input': float(prompt / context * _MILLION), 'output': float(both - prompt)}
+
+
+def price_summary(expression: str, multiplier='1') -> dict:
+    """What a member sees in the model list: base rates and, if tiered, the long-context rates."""
+    compiled = compile_expression(expression)
+    if compiled.per_call:
+        return {'per_call': float(_usd(expression, multiplier, {}))}
+    thresholds = _len_thresholds(compiled.tree)
+    if not thresholds:
+        return {**_rates(expression, multiplier, _MILLION), 'long': None}
+    above = thresholds[0]
+    base = _rates(expression, multiplier, min(above, _MILLION))
+    return {**base, 'long': {'above': above, **_rates(expression, multiplier, above + _MILLION)}}
+
+
+_FREE_CACHE: dict[tuple[str, str], bool] = {}
+
+
+def is_free(expression: str, multiplier='1') -> bool:
+    """A price of zero for every kind of usage: such models stay usable with no balance left."""
+    key = (expression, str(multiplier))
+    if key in _FREE_CACHE:
+        return _FREE_CACHE[key]
+    try:
+        free = decimal(multiplier) == 0 or _always_zero(expression, multiplier)
+    except ValueError:
+        free = False
+    if len(_FREE_CACHE) > 512:
+        _FREE_CACHE.clear()
+    _FREE_CACHE[key] = free
+    return free
+
+
+def _always_zero(expression, multiplier) -> bool:
+    compiled = compile_expression(expression)
+    sizes = {1000, _MILLION}
+    for threshold in _len_thresholds(compiled.tree):
+        sizes |= {max(threshold - 1, 1), threshold, threshold + 1}
+    vectors = [*_SMOKE_VECTORS, *({'prompt_tokens': size, 'completion_tokens': _MILLION} for size in sizes)]
+    anthropic = {
+        'input_tokens': _MILLION,
+        'output_tokens': _MILLION,
+        'cache_read_input_tokens': _MILLION,
+        'cache_creation_input_tokens': _MILLION,
+        'cache_creation': {'ephemeral_5m_input_tokens': _MILLION // 2, 'ephemeral_1h_input_tokens': _MILLION // 2},
+    }
+    probes = [(vector, 'openai') for vector in vectors] + [(anthropic, 'anthropic')]
+    for sample in _SMOKE_REQUESTS:
+        request = request_snapshot(expression, sample.get('body'), sample.get('headers'))
+        for usage, provider in probes:
+            for count in (1, MAX_IMAGE_COUNT):
+                result = price_usage(
+                    expression,
+                    usage,
+                    provider=provider,
+                    multiplier=multiplier,
+                    credits_per_usd=1,
+                    image_count=count,
+                    request=request,
+                )
+                if Decimal(result['usd']) != 0:
+                    return False
+    return True

@@ -65,6 +65,32 @@ export async function teamRequest<T = any>(path: string, options: RequestInit = 
 export const saveTeam = (path: string, data: unknown, method = 'PUT') =>
 	teamRequest(path, { method, body: JSON.stringify(data) });
 export const getMyQuota = () => teamRequest<QuotaSummary>('/team/quota/me');
+
+/** USD per million tokens (input/output) or per call; `free` models work with no balance left. */
+export type ModelPriceSummary = {
+	free: boolean;
+	per_call?: number;
+	input?: number;
+	output?: number;
+	long?: { above: number; input: number; output: number } | null;
+};
+export type ModelPriceList = {
+	enabled: boolean;
+	unit: 'requests' | 'credits' | null;
+	prices: Record<string, ModelPriceSummary>;
+};
+export const getModelPrices = () => teamRequest<ModelPriceList>('/team/prices');
+
+// New-API model ratio: 1× is $2 per million input tokens.
+export const USD_PER_RATIO = 2;
+export const priceRatio = (usdPerMillion = 0) =>
+	Number((usdPerMillion / USD_PER_RATIO).toPrecision(3)).toString();
+export const contextSize = (tokens: number) =>
+	tokens >= 1_000_000 && tokens % 100_000 === 0
+		? `${tokens / 1_000_000}M`
+		: tokens >= 1000 && tokens % 1000 === 0
+			? `${tokens / 1000}K`
+			: tokens.toLocaleString();
 // Enterprise ID remembered by /connect/<id> and the sign-in page (localStorage).
 export const ENTERPRISE_LOGIN_KEY = 'enterpriseLoginId';
 

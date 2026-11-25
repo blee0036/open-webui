@@ -20,7 +20,13 @@ from open_webui.models.team import (
 from open_webui.models.users import User
 from open_webui.utils.auth import get_admin_user, get_verified_user
 from open_webui.utils.quota_periods import validate_reset
-from open_webui.utils.quota_pricing import MAX_EXPRESSION_LENGTH, MAX_QUOTA, validate_price
+from open_webui.utils.quota_pricing import (
+    MAX_EXPRESSION_LENGTH,
+    MAX_QUOTA,
+    is_free,
+    price_summary,
+    validate_price,
+)
 from open_webui.utils.quotas import add_bonus, assign_plan, quota_summary, record, settle
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import and_, func, or_, select, update
@@ -158,6 +164,23 @@ async def set_settings(form: SettingsForm, user=Depends(get_admin_user)):
 @router.get('/quota/me')
 async def my_quota(user=Depends(get_verified_user)):
     return await quota_summary(user.id)
+
+
+@router.get('/prices')
+async def model_prices(user=Depends(get_verified_user)):
+    """Rates for the model list (USD per million tokens or per call); expressions stay admin-only."""
+    summary = await quota_summary(user.id)
+    if not summary.get('enabled'):
+        return {'enabled': False, 'unit': None, 'prices': {}}
+    prices = {}
+    async with get_async_db() as db:
+        for row in (await db.execute(select(ModelPrice))).scalars():
+            try:
+                free = is_free(row.expression, row.multiplier)
+                prices[row.model_id] = {'free': free, **({} if free else price_summary(row.expression, row.multiplier))}
+            except ValueError:
+                continue  # An unusable price is reported to admins on the price page, not here.
+    return {'enabled': True, 'unit': summary['plan']['unit'], 'prices': prices}
 
 
 @router.get('/quota/me/entries')

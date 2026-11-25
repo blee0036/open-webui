@@ -3,7 +3,12 @@ import i18next from 'i18next';
 
 export const getErrorMessage = (err: any, fallback = 'Server connection failed') => {
 	if (Array.isArray(err)) return fallback;
-	const detail = err?.detail ?? err?.error ?? err;
+	// Background chat tasks report HTTP errors as {content: <detail>} (chat:message:error).
+	const detail =
+		err?.detail ??
+		err?.error ??
+		(err?.content && typeof err.content === 'object' ? err.content : undefined) ??
+		err;
 	if (detail?.code === 'quota_exhausted') {
 		return detail.reset_at
 			? i18next.t('Quota exhausted. Resets at {{time}}.', {

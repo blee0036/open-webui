@@ -15,6 +15,7 @@
 	import ArrowUpTray from '$lib/components/icons/ArrowUpTray.svelte';
 	import Check from '$lib/components/icons/Check.svelte';
 	import ModelItemMenu from './ModelItemMenu.svelte';
+	import ModelPriceTag from '$lib/components/team/ModelPriceTag.svelte';
 	import EllipsisHorizontal from '$lib/components/icons/EllipsisHorizontal.svelte';
 	import { toast } from 'svelte-sonner';
 	import Tag from '$lib/components/icons/Tag.svelte';
@@ -171,6 +172,8 @@
 						</div>
 					{/if}
 				{/if}
+
+				<ModelPriceTag model={item.model} />
 
 				{#if item.model.loaded}
 					<div class="flex items-center px-0.5">

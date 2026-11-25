@@ -15,6 +15,7 @@ from open_webui.utils.quota_periods import period_bounds
 from open_webui.utils.quota_pricing import (
     MAX_QUOTA,
     freeze_request,
+    is_free,
     is_per_call,
     normalize_image_count,
     price_usage,
@@ -253,6 +254,8 @@ async def reserve(
         price = await db.get(ModelPrice, model_id)
         if not price and price_model_id:
             price = await db.get(ModelPrice, price_model_id)
+        # A zero-priced model is the fallback: usable with an empty or negative balance, never charged.
+        free = bool(price) and is_free(price.expression, price.multiplier)
         # Request-count plans keep the price too, to show what each request would have cost.
         snapshot = {'unit': period.unit, 'provider': provider, 'image_count': image_count}
         if period.unit != 'credits' and price:
@@ -298,8 +301,11 @@ async def reserve(
                 )['credits']
             except ValueError as error:
                 raise HTTPException(400, detail={'code': 'model_price_error', 'message': str(error)}) from error
+        if free:
+            amount = 0
+            snapshot['free'] = True
         available = period.base + period.bonus - period.used - period.reserved
-        if available < amount or available <= 0:
+        if not free and (available < amount or available <= 0):
             raise HTTPException(
                 429,
                 detail={
@@ -373,6 +379,8 @@ async def settle(entry, usage=None, detail=None, *, override_charge=None, actor_
             charge, state = 0, 'released'
         elif override_charge is not None:
             charge, state = override_charge, 'settled'
+        elif (row.pricing or {}).get('free'):
+            charge, state = 0, 'settled'
         elif period.unit == 'requests':
             charge, state = 1, 'settled'
         elif usage is None and detail is None and per_call_price(row.pricing):

@@ -42,6 +42,7 @@
 		resolveLocalizedModelName
 	} from '$lib/utils/localizedContent';
 	import { getModels } from '$lib/apis';
+	import { loadModelPrices } from '$lib/components/team/modelPrices';
 
 	import ChevronDown from '$lib/components/icons/ChevronDown.svelte';
 	import Check from '$lib/components/icons/Check.svelte';
@@ -156,6 +157,7 @@
 		if (show) {
 			searchValue = '';
 			listScrollTop = 0;
+			if ($config?.features?.enable_quota) void loadModelPrices();
 			if (!selectionOnly) {
 				setOllamaVersion();
 				setProviderDownloadConnections();

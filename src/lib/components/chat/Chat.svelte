@@ -163,6 +163,8 @@
 	import Tabs from './Tabs.svelte';
 	import EventConfirmDialog from '../common/ConfirmDialog.svelte';
 	import ElicitationDialog from './ElicitationDialog.svelte';
+	import QuotaExhaustedModal from './QuotaExhaustedModal.svelte';
+	import { loadModelPrices, modelPrices, priceOf } from '$lib/components/team/modelPrices';
 	import DeleteConfirmDialog from '../common/ConfirmDialog.svelte';
 	import WebSearchConfirmDialog from '../common/ConfirmDialog.svelte';
 	import Placeholder from './Placeholder.svelte';
@@ -5351,9 +5353,34 @@
 		return res;
 	};
 
+	// Out of balance on a paid model: offer the zero-priced models, which still work.
+	let quotaPrompt = { show: false, message: '', models: [], messageId: null };
+
+	const offerFreeModels = async (responseMessage, errorMessage) => {
+		if (!$config?.features?.enable_quota) return;
+		await loadModelPrices();
+		const usedModel = $models.find((m) => m.id === responseMessage.model);
+		if (priceOf($modelPrices, usedModel)?.free) return;
+		const free = $models
+			.filter((m) => priceOf($modelPrices, m)?.free)
+			.map((m) => ({ id: m.id, name: m.name }));
+		if (!free.length) return;
+		quotaPrompt = { show: true, message: errorMessage, models: free, messageId: responseMessage.id };
+	};
+
+	const switchToFreeModel = async (modelId) => {
+		const failed = quotaPrompt.messageId ? history.messages[quotaPrompt.messageId] : null;
+		atSelectedModel = undefined;
+		selectedModels = [modelId];
+		await tick();
+		if (failed && history.messages[failed.parentId]) await regenerateResponse(failed);
+	};
+
 	const handleOpenAIError = (error, responseMessage) => {
 		const responseFailed = responseMessage.done && responseMessage.error;
 		const errorMessage = getErrorMessage(error, $i18n.t('Server connection failed'));
+		const code = error?.content?.code ?? error?.detail?.code ?? error?.error?.code ?? error?.code;
+		if (code === 'quota_exhausted' && !responseFailed) void offerFreeModels(responseMessage, errorMessage);
 		responseMessage.error = { content: errorMessage };
 		responseMessage.done = true;
 		if (responseMessage.statusHistory) {
@@ -6054,6 +6081,13 @@
 	on:cancel={() => {
 		eventCallback(false);
 	}}
+/>
+
+<QuotaExhaustedModal
+	bind:show={quotaPrompt.show}
+	message={quotaPrompt.message}
+	freeModels={quotaPrompt.models}
+	onSwitch={switchToFreeModel}
 />
 
 {#if browserInteraction?.type === 'request:elicitation'}

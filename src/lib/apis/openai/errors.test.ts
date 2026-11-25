@@ -27,6 +27,13 @@ describe('model quota errors', () => {
 		);
 	});
 
+	it('reads quota errors reported by background chat tasks', () => {
+		expect(getErrorMessage({ content: { code: 'quota_exhausted', reset_at: null } })).toContain(
+			'does not reset'
+		);
+		expect(getErrorMessage({ content: 'Plain failure' })).toBe('Plain failure');
+	});
+
 	it('points missing model prices to administration', () => {
 		expect(getErrorMessage({ detail: { code: 'model_price_missing' } })).toContain(
 			'Ask an administrator'
