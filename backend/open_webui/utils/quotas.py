@@ -217,6 +217,8 @@ async def add_bonus(user_id, amount, actor_id, reason, operation_id):
             _, period = await current_period(db, account, default_id)
             if period.base + period.bonus + amount > MAX_QUOTA:
                 raise HTTPException(400, 'Quota adjustment exceeds the supported limit')
+            if period.base + period.bonus + amount < 0:
+                raise HTTPException(400, 'Cannot deduct more than this period’s total allowance')
             period.bonus += amount
             db.add(
                 QuotaAudit(

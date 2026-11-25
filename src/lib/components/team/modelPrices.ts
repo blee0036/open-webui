@@ -17,10 +17,7 @@ export const loadModelPrices = () => {
 };
 
 /** A workspace model is priced by its own id first, then by its base model (as the backend does). */
-export const priceOf = (
-	list: ModelPriceList | null,
-	model: any
-): ModelPriceSummary | undefined => {
+export const priceOf = (list: ModelPriceList | null, model: any): ModelPriceSummary | undefined => {
 	if (!list?.enabled || !model) return undefined;
 	return list.prices[model.id] ?? list.prices[model.info?.base_model_id ?? ''];
 };

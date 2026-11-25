@@ -212,8 +212,31 @@ async def my_entries(
 
 @router.get('/admin/plans')
 async def plans(user=Depends(get_admin_user)):
+    """Packages with how many members use each: personal assignments, plus everyone else on the default."""
+    default_id = await Config.get('team.quota.default_plan_id')
     async with get_async_db() as db:
-        return [record(row) for row in (await db.execute(select(QuotaPlan).order_by(QuotaPlan.created_at))).scalars()]
+        rows = (await db.execute(select(QuotaPlan).order_by(QuotaPlan.created_at))).scalars().all()
+        personal = dict(
+            (
+                await db.execute(
+                    select(QuotaAccount.override_plan_id, func.count())
+                    .join(User, User.id == QuotaAccount.user_id)
+                    .where(QuotaAccount.override_plan_id.is_not(None), User.role != 'pending')
+                    .group_by(QuotaAccount.override_plan_id)
+                )
+            ).all()
+        )
+        member_count = await db.scalar(select(func.count()).select_from(User).where(User.role != 'pending'))
+    inherited = max(0, (member_count or 0) - sum(personal.values()))
+    return [
+        {
+            **record(row),
+            'default': row.id == default_id,
+            'members': personal.get(row.id, 0) + (inherited if row.id == default_id else 0),
+            'personal_members': personal.get(row.id, 0),
+        }
+        for row in rows
+    ]
 
 
 @router.post('/admin/plans')
@@ -270,8 +293,16 @@ class AssignmentForm(AdjustmentForm):
 
 
 class BonusForm(AdjustmentForm):
-    amount: int = Field(gt=0, le=MAX_QUOTA)
+    # Positive adds to this period; negative deducts (both expire at the next reset).
+    amount: int = Field(ge=-MAX_QUOTA, le=MAX_QUOTA)
     operation_id: uuid.UUID
+
+    @field_validator('amount')
+    @classmethod
+    def amount_nonzero(cls, value):
+        if value == 0:
+            raise ValueError('Enter an amount to add or deduct')
+        return value
 
 
 @router.get('/admin/users')
@@ -286,6 +317,69 @@ async def users(query: str = '', limit: int = Query(50, ge=1, le=100), user=Depe
         rows = [dict(row._mapping) for row in (await db.execute(stmt)).all()]
         orgs = await _orgs(db, [row['id'] for row in rows])
     return [{**row, 'org': orgs.get(row['id'])} for row in rows]
+
+
+@router.get('/admin/members')
+async def members(
+    query: str = Query('', max_length=200),
+    plan_id: str | None = Query(None, max_length=100),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    user=Depends(get_admin_user),
+):
+    """One page of members with their package and this period's balance (the member-quota table)."""
+    default_id = await Config.get('team.quota.default_plan_id')
+    async with get_async_db() as db:
+        stmt = (
+            select(User.id, User.name, User.email, User.role)
+            .outerjoin(QuotaAccount, QuotaAccount.user_id == User.id)
+            .where(User.role != 'pending')
+        )
+        if query:
+            escaped = query.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
+            pattern = f'%{escaped}%'
+            enterprise = select(EnterpriseIdentity.user_id).where(
+                EnterpriseIdentity.connection_id.ilike(pattern, escape='\\')
+            )
+            stmt = stmt.where(
+                User.name.ilike(pattern, escape='\\') | User.email.ilike(pattern, escape='\\') | User.id.in_(enterprise)
+            )
+        if plan_id == 'personal':
+            stmt = stmt.where(QuotaAccount.override_plan_id.is_not(None))
+        elif plan_id == 'inherited':
+            stmt = stmt.where(QuotaAccount.override_plan_id.is_(None))
+        elif plan_id:
+            chosen = QuotaAccount.override_plan_id == plan_id
+            stmt = stmt.where(chosen | QuotaAccount.override_plan_id.is_(None) if plan_id == default_id else chosen)
+        total = await db.scalar(select(func.count()).select_from(stmt.subquery()))
+        rows = (
+            await db.execute(stmt.order_by(User.name, User.id).offset((page - 1) * page_size).limit(page_size))
+        ).all()
+        orgs = await _orgs(db, [row.id for row in rows])
+    items = []
+    for row in rows:
+        item = {'id': row.id, 'name': row.name, 'email': row.email, 'role': row.role, 'org': orgs.get(row.id)}
+        try:
+            item |= await quota_summary(row.id)
+        except HTTPException as error:
+            item['error'] = error.detail
+        items.append(item)
+    periods = [item['period']['id'] for item in items if item.get('period')]
+    if periods:
+        async with get_async_db() as db:
+            counts = dict(
+                (
+                    await db.execute(
+                        select(QuotaEntry.period_id, func.count())
+                        .where(QuotaEntry.period_id.in_(periods), QuotaEntry.state == 'settled')
+                        .group_by(QuotaEntry.period_id)
+                    )
+                ).all()
+            )
+        for item in items:
+            if item.get('period'):
+                item['requests'] = counts.get(item['period']['id'], 0)
+    return {'items': items, 'total': total, 'default_plan_id': default_id}
 
 
 @router.get('/admin/users/{user_id}/quota')

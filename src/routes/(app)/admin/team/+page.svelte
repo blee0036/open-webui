@@ -1,45 +1,16 @@
 <script lang="ts">
 	import { getContext, onMount } from 'svelte';
 	import { toast } from 'svelte-sonner';
-	import {
-		teamRequest,
-		saveTeam,
-		quotaDate,
-		quotaAmount,
-		quotaInput,
-		quotaStored,
-		CREDITS_PER_USD,
-		type QuotaPlan
-	} from '$lib/apis/team';
+	import { teamRequest, saveTeam, quotaDate } from '$lib/apis/team';
+	import PackagesPanel from '$lib/components/team/admin/PackagesPanel.svelte';
+	import MembersPanel from '$lib/components/team/admin/MembersPanel.svelte';
 	import EnterpriseAdmin from '$lib/components/team/EnterpriseAdmin.svelte';
 	import UsageDashboard from '$lib/components/team/usage/UsageDashboard.svelte';
 	import PriceSync from '$lib/components/team/PriceSync.svelte';
-	import { getBackendConfig } from '$lib/apis';
-	import { config } from '$lib/stores';
 	const i18n = getContext<any>('i18n');
 	let tab = 'packages';
-	let plans: QuotaPlan[] = [];
-	let settings: any = { enabled: false, quota_enabled: false, default_plan_id: null };
 	let error = '';
 	let busy = false;
-	let reason = '';
-	let effective = '';
-	let editorId = '';
-	const blankPlan = () => ({
-		name: '',
-		unit: 'requests',
-		allowance: 1000,
-		reset: { kind: 'month', timezone: 'Asia/Singapore', days: 30 },
-		archived: false
-	});
-	let editor: any = blankPlan();
-	let query = '';
-	let users: any[] = [];
-	let selectedUser: any = null;
-	let userQuota: any = null;
-	let assigned = '';
-	let bonus = 0;
-	let bonusOperation: { key: string; id: string } | null = null;
 	let prices: any[] = [];
 	let priceReason = '';
 	let price = {
@@ -55,11 +26,7 @@
 	}
 	async function load() {
 		try {
-			[settings, plans, prices] = await Promise.all([
-				teamRequest('/team/admin/settings'),
-				teamRequest('/team/admin/plans'),
-				teamRequest('/team/admin/prices')
-			]);
+			prices = await teamRequest('/team/admin/prices');
 			error = '';
 		} catch (e) {
 			error = String(e instanceof Error ? e.message : e);
@@ -78,32 +45,12 @@
 			busy = false;
 		}
 	}
-	async function searchUsers() {
-		users = await teamRequest(`/team/admin/users?query=${encodeURIComponent(query)}`);
-	}
-	async function chooseUser(member: any) {
-		selectedUser = member;
-		userQuota = await teamRequest(`/team/admin/users/${member.id}/quota`);
-		assigned = userQuota.inherited ? '' : (userQuota.plan?.id ?? '');
-	}
-	async function addBonus() {
-		const key = JSON.stringify([selectedUser.id, bonus, reason]);
-		if (bonusOperation?.key !== key) bonusOperation = { key, id: crypto.randomUUID() };
-		await saveTeam(
-			`/team/admin/users/${selectedUser.id}/bonus`,
-			{ amount: quotaStored(bonus, userQuota.plan?.unit), reason, operation_id: bonusOperation.id },
-			'POST'
-		);
-		bonusOperation = null;
-		bonus = 0;
-		await chooseUser(selectedUser);
-	}
 	onMount(() => {
 		load();
 	});
 </script>
 
-<div class="mx-auto max-w-6xl px-5 py-6 md:px-10">
+<div class="mx-auto max-w-7xl px-5 py-6 md:px-10">
 	<h1 class="text-2xl font-semibold">{$i18n.t('Team & quota')}</h1>
 	<nav class="my-6 flex gap-1 overflow-x-auto border-b border-gray-200 dark:border-gray-800">
 		{#each [['packages', 'Packages'], ['members', 'Member quota'], ['usage', 'Usage'], ['pricing', 'Model pricing'], ['sso', 'Enterprise login'], ['audit', 'Adjustment history']] as item}
@@ -113,7 +60,6 @@
 					: 'border-transparent text-gray-500'}"
 				on:click={() => {
 					tab = item[0];
-					if (tab === 'members') action(searchUsers, false);
 					if (tab === 'audit') action(loadAudit, false);
 				}}>{$i18n.t(item[1])}</button
 			>
@@ -125,265 +71,8 @@
 		>
 			{error}
 		</p>{/if}
-	{#if tab === 'packages'}
-		<div class="grid gap-9 lg:grid-cols-2">
-			<section>
-				<h2 class="mb-4 text-lg font-medium">{$i18n.t('Default package')}</h2>
-				<form
-					class="space-y-4"
-					on:submit|preventDefault={() =>
-						action(async () => {
-							await saveTeam('/team/admin/settings', {
-								...settings,
-								default_plan_id: settings.default_plan_id || null,
-								default_effective_at: effective
-									? Math.floor(new Date(effective).getTime() / 1000)
-									: null
-							});
-							await load();
-							config.set(await getBackendConfig(localStorage.token));
-						})}
-				>
-					<label class="flex items-center gap-3"
-						><input type="checkbox" bind:checked={settings.enabled} />
-						{$i18n.t('Enable team workspaces')}</label
-					>
-					<label class="flex items-center gap-3"
-						><input type="checkbox" bind:checked={settings.quota_enabled} />
-						{$i18n.t('Enforce model quota')}</label
-					>
-					<label class="block text-sm"
-						>{$i18n.t('Inherited by all users without a personal package')}<select
-							class="field mt-2"
-							bind:value={settings.default_plan_id}
-							><option value="">{$i18n.t('Select a package')}</option
-							>{#each plans.filter((p) => !p.archived) as plan}<option value={plan.id}
-									>{plan.name} · {quotaAmount(plan.allowance, plan.unit)}
-									{plan.unit === 'requests' ? $i18n.t('requests') : ''}</option
-								>{/each}</select
-						></label
-					>
-					<label class="block text-sm"
-						>{$i18n.t('Effective time for non-resetting accounts')}<input
-							class="field mt-2"
-							type="datetime-local"
-							bind:value={effective}
-						/></label
-					>
-					<button class="primary" disabled={busy}>{$i18n.t('Save configuration')}</button>
-				</form>
-				<p class="mt-4 text-sm leading-6 text-gray-500">
-					{$i18n.t(
-						'Personal assignments are preserved. Different units or reset rules take effect at the current period boundary. Temporary bonuses expire at reset.'
-					)}
-				</p>
-				<div class="mt-7 space-y-2">
-					{#each plans as plan}<button
-							class="flex w-full items-center justify-between gap-3 rounded-xl bg-gray-50 p-3 text-left text-sm dark:bg-gray-900"
-							on:click={() => {
-								editorId = plan.id;
-								editor = structuredClone(plan);
-							}}
-							><span class="font-medium"
-								>{plan.name}{plan.archived ? ' · ' + $i18n.t('Archived') : ''}</span
-							><span
-								>{quotaAmount(plan.allowance, plan.unit)}
-								{plan.unit === 'requests' ? $i18n.t('requests') : ''} · {$i18n.t(
-									plan.reset.kind
-								)}</span
-							></button
-						>{/each}
-				</div>
-			</section>
-			<section>
-				<div class="mb-4 flex items-center justify-between">
-					<h2 class="text-lg font-medium">{$i18n.t(editorId ? 'Edit package' : 'New package')}</h2>
-					{#if editorId}<button
-							class="text-sm underline"
-							on:click={() => {
-								editorId = '';
-								editor = blankPlan();
-							}}>{$i18n.t('New package')}</button
-						>{/if}
-				</div>
-				<form
-					class="space-y-4"
-					on:submit|preventDefault={() =>
-						action(async () => {
-							const { id, created_at, updated_at, ...form } = editor;
-							await saveTeam(
-								`/team/admin/plans${editorId ? '/' + editorId : ''}`,
-								form,
-								editorId ? 'PUT' : 'POST'
-							);
-							await load();
-						})}
-				>
-					<label class="block text-sm"
-						>{$i18n.t('Name')}<input
-							class="field mt-2"
-							bind:value={editor.name}
-							required
-							maxlength="100"
-						/></label
-					>
-					<div class="grid grid-cols-2 gap-3">
-						<label class="text-sm"
-							>{$i18n.t('Metering')}<select
-								class="field mt-2"
-								bind:value={editor.unit}
-								on:change={() =>
-									(editor.allowance = editor.unit === 'credits' ? 10 * CREDITS_PER_USD : 1000)}
-								disabled={!!editorId}
-								><option value="requests">{$i18n.t('API requests')}</option><option value="credits"
-									>{$i18n.t('Token credits')}</option
-								></select
-							></label
-						><label class="text-sm"
-							>{$i18n.t(
-								editor.unit === 'credits' ? 'Base allowance (USD)' : 'Base allowance'
-							)}<input
-								class="field mt-2"
-								type="number"
-								min="0"
-								step={editor.unit === 'credits' ? '0.01' : '1'}
-								value={quotaInput(editor.allowance, editor.unit)}
-								on:input={(e) =>
-									(editor.allowance = quotaStored(e.currentTarget.value || 0, editor.unit))}
-								required
-							/></label
-						>
-					</div>
-					<div class="grid grid-cols-2 gap-3">
-						<label class="text-sm"
-							>{$i18n.t('Reset rule')}<select
-								class="field mt-2"
-								bind:value={editor.reset.kind}
-								disabled={!!editorId}
-								>{#each ['day', 'week', 'month', 'days', 'never'] as kind}<option value={kind}
-										>{$i18n.t(kind)}</option
-									>{/each}</select
-							></label
-						><label class="text-sm"
-							>{$i18n.t('Timezone')}<input
-								class="field mt-2"
-								bind:value={editor.reset.timezone}
-								disabled={!!editorId}
-								required
-							/></label
-						>
-					</div>
-					{#if editor.reset.kind === 'days'}<label class="block text-sm"
-							>{$i18n.t('Interval in days')}<input
-								class="field mt-2"
-								type="number"
-								min="1"
-								max="3660"
-								bind:value={editor.reset.days}
-								disabled={!!editorId}
-								required
-							/></label
-						>{/if}
-					{#if editorId}<label class="flex items-center gap-3 text-sm"
-							><input type="checkbox" bind:checked={editor.archived} />{$i18n.t('Archived')}</label
-						>{/if}
-					<button class="primary" disabled={busy}>{$i18n.t('Save package')}</button>
-				</form>
-			</section>
-		</div>
-	{:else if tab === 'members'}
-		<div class="grid gap-8 md:grid-cols-[minmax(0,1fr)_minmax(0,1.5fr)]">
-			<section>
-				<form class="mb-4 flex gap-2" on:submit|preventDefault={() => action(searchUsers, false)}>
-					<input class="field" bind:value={query} placeholder={$i18n.t('Search users')} /><button
-						class="primary"
-						disabled={busy}>{$i18n.t('Search')}</button
-					>
-				</form>
-				<div class="space-y-1">
-					{#each users as member}<button
-							class="w-full rounded-xl p-3 text-left text-sm {selectedUser?.id === member.id
-								? 'bg-gray-100 dark:bg-gray-800'
-								: 'hover:bg-gray-50 dark:hover:bg-gray-900'}"
-							on:click={() => action(() => chooseUser(member), false)}
-							><p class="font-medium">{member.name}</p>
-							<p class="truncate text-xs text-gray-500">{member.email}</p></button
-						>{/each}
-				</div>
-			</section>
-			{#if selectedUser && userQuota}<section class="space-y-5">
-					<h2 class="text-lg font-medium">{selectedUser.name}</h2>
-					<p class="text-sm">
-						{userQuota.plan?.name ?? '—'} · {quotaAmount(userQuota.available, userQuota.plan?.unit)}
-						{$i18n.t('available')} · {quotaDate(userQuota.period?.ends_at)}
-					</p>
-					{#if userQuota.pending_plan}<p class="text-sm text-amber-700 dark:text-amber-300">
-							{$i18n.t('Scheduled package')}: {userQuota.pending_plan.name} · {quotaDate(
-								userQuota.pending_at
-							)}
-						</p>{/if}
-					<form
-						class="space-y-4"
-						on:submit|preventDefault={() =>
-							action(async () => {
-								await saveTeam(`/team/admin/users/${selectedUser.id}/plan`, {
-									plan_id: assigned || null,
-									effective_at: effective ? Math.floor(new Date(effective).getTime() / 1000) : null,
-									reason
-								});
-								await chooseUser(selectedUser);
-							})}
-					>
-						<label class="block text-sm"
-							>{$i18n.t('Package')}<select class="field mt-2" bind:value={assigned}
-								><option value="">{$i18n.t('Inherit global default')}</option
-								>{#each plans.filter((p) => !p.archived) as plan}<option value={plan.id}
-										>{plan.name}</option
-									>{/each}</select
-							></label
-						>
-						<label class="block text-sm"
-							>{$i18n.t('Effective time for non-resetting accounts')}<input
-								type="datetime-local"
-								class="field mt-2"
-								bind:value={effective}
-							/></label
-						>
-						<label class="block text-sm"
-							>{$i18n.t('Note (optional)')}<input
-								class="field mt-2"
-								maxlength="500"
-								bind:value={reason}
-							/></label
-						><button class="primary" disabled={busy}>{$i18n.t('Assign package')}</button>
-					</form>
-					<form
-						class="space-y-3 border-t border-gray-200 pt-5 dark:border-gray-800"
-						on:submit|preventDefault={() => action(addBonus)}
-					>
-						<label class="block text-sm"
-							>{$i18n.t(
-								userQuota.plan?.unit === 'credits'
-									? 'Add quota for this period only (USD)'
-									: 'Add quota for this period only'
-							)}<input
-								class="field mt-2"
-								type="number"
-								min={userQuota.plan?.unit === 'credits' ? '0.01' : '1'}
-								step={userQuota.plan?.unit === 'credits' ? '0.01' : '1'}
-								required
-								bind:value={bonus}
-							/></label
-						><label class="block text-sm"
-							>{$i18n.t('Note (optional)')}<input
-								class="field mt-2"
-								maxlength="500"
-								bind:value={reason}
-							/></label
-						><button class="primary" disabled={busy}>{$i18n.t('Add temporary quota')}</button>
-					</form>
-				</section>{/if}
-		</div>
+	{#if tab === 'packages'}<PackagesPanel />
+	{:else if tab === 'members'}<MembersPanel />
 	{:else if tab === 'pricing'}
 		<div class="grid gap-8 lg:grid-cols-2">
 			<section>
