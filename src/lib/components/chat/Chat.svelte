@@ -5365,7 +5365,12 @@
 			.filter((m) => priceOf($modelPrices, m)?.free)
 			.map((m) => ({ id: m.id, name: m.name }));
 		if (!free.length) return;
-		quotaPrompt = { show: true, message: errorMessage, models: free, messageId: responseMessage.id };
+		quotaPrompt = {
+			show: true,
+			message: errorMessage,
+			models: free,
+			messageId: responseMessage.id
+		};
 	};
 
 	const switchToFreeModel = async (modelId) => {
@@ -5380,7 +5385,8 @@
 		const responseFailed = responseMessage.done && responseMessage.error;
 		const errorMessage = getErrorMessage(error, $i18n.t('Server connection failed'));
 		const code = error?.content?.code ?? error?.detail?.code ?? error?.error?.code ?? error?.code;
-		if (code === 'quota_exhausted' && !responseFailed) void offerFreeModels(responseMessage, errorMessage);
+		if (code === 'quota_exhausted' && !responseFailed)
+			void offerFreeModels(responseMessage, errorMessage);
 		responseMessage.error = { content: errorMessage };
 		responseMessage.done = true;
 		if (responseMessage.statusHistory) {
