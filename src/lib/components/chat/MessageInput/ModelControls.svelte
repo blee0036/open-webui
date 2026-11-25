@@ -15,6 +15,7 @@
 	import Check from '$lib/components/icons/Check.svelte';
 	import Tooltip from '$lib/components/common/Tooltip.svelte';
 	import Knobs from '$lib/components/icons/Knobs.svelte';
+	import LightBulb from '$lib/components/icons/LightBulb.svelte';
 	import { localizeModelControls, resolveLocalizedModelName } from '$lib/utils/localizedContent';
 	import { getChatContext } from '$lib/components/chat/context';
 
@@ -50,6 +51,30 @@
 				!('pipe' in model && model.pipe) &&
 				Object.keys(model.info?.params?.model_controls ?? {}).length > 0
 		);
+	// The built-in reasoning effort menu (backend utils/reasoning_presets.py) sits next to the
+	// model name when one model is selected, instead of inside the model controls menu.
+	const EFFORT_KEY = 'reasoning_effort';
+	let effortOpen = false;
+	$: effortModel =
+		selectedModels.length === 1 &&
+		available.length === 1 &&
+		available[0].info?.params?.model_controls?.[EFFORT_KEY]
+			? available[0]
+			: null;
+	$: effortControl = effortModel
+		? localizeModelControls(effortModel, $i18n.language)[EFFORT_KEY]
+		: null;
+	$: effortChoice = effortModel ? modelControls[effortModel.id]?.[EFFORT_KEY] : undefined;
+	// Controls left for the model controls menu, keyed by model id.
+	$: menuEntries = Object.fromEntries(
+		available.map((model) => [
+			model.id,
+			Object.entries(localizeModelControls(model, $i18n.language)).filter(
+				([key]) => !(effortModel && model.id === effortModel.id && key === EFFORT_KEY)
+			)
+		])
+	);
+	$: menuModels = available.filter((model) => menuEntries[model.id]?.length > 0);
 	$: rowClass = `focus-ring flex h-[1.6875rem] w-full cursor-pointer select-none items-center gap-2 rounded-xl px-2 text-left text-[0.8125rem] font-normal text-gray-700 outline-hidden transition-colors duration-75 dark:text-gray-100 ${$settings?.highContrastMode ? 'hover:bg-gray-200! dark:hover:bg-gray-800!' : 'hover:bg-gray-50/40! dark:hover:bg-gray-800/40!'}`;
 	$: selectedClass = $settings?.highContrastMode
 		? 'bg-gray-200 dark:bg-gray-800'
@@ -101,7 +126,10 @@
 		disabled={saving}
 		aria-checked={!modelControls[model.id]?.[key]}
 		class={`${rowClass} ${!modelControls[model.id]?.[key] ? selectedClass : ''}`}
-		on:click={() => select(model.id, key, '')}
+		on:click={() => {
+			effortOpen = false;
+			select(model.id, key, '');
+		}}
 	>
 		<span class="min-w-0 flex-1 truncate text-left">
 			{$i18n.t('Default')}{#if control.options[control.default ?? '']?.label}{' · '}{control
@@ -116,7 +144,10 @@
 			disabled={saving}
 			aria-checked={modelControls[model.id]?.[key] === value}
 			class={`${rowClass} ${modelControls[model.id]?.[key] === value ? selectedClass : ''}`}
-			on:click={() => select(model.id, key, value)}
+			on:click={() => {
+				effortOpen = false;
+				select(model.id, key, value);
+			}}
 		>
 			<span class="min-w-0 flex-1 truncate text-left">{option.label}</span>
 			{#if modelControls[model.id]?.[key] === value}<Check className="size-3! shrink-0" />{/if}
@@ -124,7 +155,33 @@
 	{/each}
 {/snippet}
 
-{#if controlsAllowed || available.length > 0}
+{#if effortModel && effortControl}
+	<Dropdown align="end" visualViewportAware bind:show={effortOpen}>
+		<Tooltip content={effortControl.label} placement="top">
+			<button
+				type="button"
+				aria-label={effortControl.label}
+				aria-haspopup="menu"
+				class={`mr-1 flex shrink-0 items-center gap-1 rounded-lg px-1.5 py-1 text-[0.8125rem] transition-colors hover:bg-gray-50/40 dark:hover:bg-gray-800/40 ${effortChoice ? 'text-gray-700 dark:text-gray-200' : 'text-gray-500 dark:text-gray-400'}`}
+			>
+				<LightBulb className="size-4" />
+				{#if effortChoice && effortControl.options[effortChoice]}
+					<span class="whitespace-nowrap">{effortControl.options[effortChoice].label}</span>
+				{/if}
+			</button>
+		</Tooltip>
+		<div slot="content">
+			<DropdownMenu className="w-48 max-w-[calc(100vw-2rem)]">
+				<div class="px-2 pt-1 pb-0.5 text-xs text-gray-400 dark:text-gray-500">
+					{effortControl.label}
+				</div>
+				{@render choices(effortModel, EFFORT_KEY, effortControl)}
+			</DropdownMenu>
+		</div>
+	</Dropdown>
+{/if}
+
+{#if controlsAllowed || menuModels.length > 0}
 	<Dropdown
 		align="end"
 		visualViewportAware
@@ -132,7 +189,7 @@
 		contentClass="overscroll-contain scrollbar-thin"
 		onOpenChange={(open) => {
 			active = null;
-			controlsOpen = open && available.length === 0;
+			controlsOpen = open && menuModels.length === 0;
 		}}
 	>
 		<Tooltip content={$i18n.t('Model controls')} placement="top">
@@ -155,13 +212,13 @@
 					</button>
 					{@render choices(active.model, active.key, active.control)}
 				{:else}
-					{#each available as model (model.id)}
+					{#each menuModels as model (model.id)}
 						{#if selectedModels.length > 1}
 							<div class="truncate px-2 pt-1.5 pb-0.5 text-xs text-gray-400 dark:text-gray-500">
 								{resolveLocalizedModelName(model, $i18n.language)}
 							</div>
 						{/if}
-						{#each Object.entries(localizeModelControls(model, $i18n.language)) as [key, control] (key)}
+						{#each menuEntries[model.id] ?? [] as [key, control] (key)}
 							{#if control.display === 'slider'}
 								<ModelControlSlider
 									{control}
@@ -200,7 +257,7 @@
 						{/each}
 					{/each}
 					{#if controlsAllowed}
-						{#if available.length}<hr class="border-gray-200/30 dark:border-gray-700/25" />{/if}
+						{#if menuModels.length}<hr class="border-gray-200/30 dark:border-gray-700/25" />{/if}
 						<button
 							type="button"
 							class={`${rowClass} text-xs!`}
