@@ -52,6 +52,7 @@ services:
       AIOHTTP_CLIENT_TIMEOUT_TOOL_SERVER: ${AIOHTTP_CLIENT_TIMEOUT_TOOL_SERVER:-2100}
       # Extra tries when a model upstream errors, drops, or replies empty before any output (0 = off).
       MODEL_REQUEST_RETRIES: ${MODEL_REQUEST_RETRIES:-3}
+      ENABLE_REASONING_PRESETS: ${ENABLE_REASONING_PRESETS:-true}
       ENABLE_WEB_SEARCH: 'true'
       # DuckDuckGo first (bundled ddgs, no key); when it errors, is rate-limited or finds
       # nothing, the same query goes to the bundled SearXNG.

@@ -275,6 +275,7 @@ from open_webui.utils.models import (
 )
 from open_webui.routers.openai import get_tether_model, get_tether_models
 from open_webui.utils.payload import apply_model_controls
+from open_webui.utils.reasoning_presets import CONTROL_KEY, preset_controls
 from open_webui.utils.oauth import (
     OAuthClientInformationFull,
     OAuthClientManager,
@@ -1678,6 +1679,11 @@ async def chat_completion(
                 controls = target.params.model_dump().get('model_controls', {}) if target else {}
                 if model.get('agent'):
                     controls = model.get('info', {}).get('params', {}).get('model_controls', {})
+                elif not controls:
+                    # The model list showed the built-in effort menu (utils/reasoning_presets.py).
+                    served = request.app.state.MODELS.get(form_data['model']) or {}
+                    if CONTROL_KEY in (((served.get('info') or {}).get('params') or {}).get('model_controls') or {}):
+                        controls = preset_controls(form_data['model'], target.base_model_id if target else None)
                 form_data['params'] = apply_model_controls(
                     copy.deepcopy(form_data.get('params') or {}),
                     controls,

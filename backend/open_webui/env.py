@@ -854,6 +854,8 @@ try:
     MODEL_REQUEST_RETRIES = max(0, int(os.getenv('MODEL_REQUEST_RETRIES', '3')))
 except ValueError:
     MODEL_REQUEST_RETRIES = 3
+# Built-in reasoning effort menu for known reasoning model families (utils/reasoning_presets.py).
+ENABLE_REASONING_PRESETS = os.getenv('ENABLE_REASONING_PRESETS', 'True').lower() == 'true'
 BYPASS_RETRIEVAL_ACCESS_CONTROL = os.getenv('BYPASS_RETRIEVAL_ACCESS_CONTROL', 'False').lower() == 'true'
 # Second web search engine tried when the configured one fails or finds nothing (e.g. 'searxng').
 WEB_SEARCH_FALLBACK_ENGINE = os.getenv('WEB_SEARCH_FALLBACK_ENGINE', '').strip().lower()

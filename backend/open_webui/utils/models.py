@@ -28,6 +28,7 @@ from open_webui.socket.utils import RedisDict
 from open_webui.utils.access_control import has_access, has_base_model_access
 from open_webui.utils.chat_variables import get_chat_variables_schema
 from open_webui.utils.json_codec import JSONCodec
+from open_webui.utils.reasoning_presets import preset_controls, preset_i18n
 from open_webui.utils.plugin import (
     get_function_module_from_cache,
     get_functions_cache,
@@ -63,6 +64,25 @@ def public_model_params(params):
     if 'compact_token_threshold' in params:
         public['compact_token_threshold'] = params['compact_token_threshold']
     return public
+
+
+def apply_reasoning_preset(model: dict) -> None:
+    """Give known reasoning models the built-in effort menu when they have no model controls."""
+    if model.get('pipe') or model.get('arena') or model.get('owner_id') or model.get('owned_by') == 'ollama':
+        return
+    info = model.get('info') or {}
+    params = info.get('params') or {}
+    if params.get('model_controls'):
+        return
+    controls = preset_controls(model.get('id'), info.get('base_model_id'))
+    if not controls:
+        return
+    meta = dict(info.get('meta') or {})
+    i18n = dict(meta.get('i18n') or {})
+    for locale, labels in preset_i18n(controls).items():
+        i18n[locale] = {**labels, **(i18n.get(locale) or {})}
+    meta['i18n'] = i18n
+    model['info'] = {**info, 'meta': meta, 'params': {**params, **public_model_params({'model_controls': controls})}}
 
 
 async def fetch_ollama_models(request: Request, user: UserModel = None):
@@ -511,6 +531,7 @@ async def get_all_models(request, refresh: bool = False, user: UserModel = None)
                 **info,
                 'params': {'compact_token_threshold': default_threshold, **(info.get('params') or {})},
             }
+        apply_reasoning_preset(model)
         action_ids = [
             action_id
             for action_id in set(model.pop('action_ids', [])) | global_action_ids
