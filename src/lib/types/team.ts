@@ -14,7 +14,8 @@ export type Project = {
 		context_revision?: number;
 		context_updated_by?: string;
 		context_updated_at?: number;
-		terminal_id?: string;
+		machine_id?: string;
+		terminal_id?: string; // former name of machine_id
 		working_directory?: string;
 		files?: { id: string; type: string; name: string; published_by?: string }[];
 	};

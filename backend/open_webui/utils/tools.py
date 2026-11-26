@@ -1664,7 +1664,7 @@ async def get_machine_tools(
             url + '/openapi.json', {'X-User-Id': user.id, **bearer_auth_header(connection.get('key', ''))}
         )
         server_data = {
-            'id': terminal_id,
+            'id': machine_id,
             'url': url,
             'openapi': openapi,
             'specs': convert_openapi_to_tool_payload(openapi),

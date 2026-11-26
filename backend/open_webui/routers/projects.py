@@ -62,7 +62,7 @@ async def create_project(form: ProjectForm, request: Request, user=Depends(get_v
                 'system_prompt': form.system_prompt,
                 'model_ids': form.model_ids,
                 'files': [],
-                'terminal_id': 'managed',
+                'machine_id': 'managed',
                 'working_directory': '/home/user',
             },
             created_at=now,

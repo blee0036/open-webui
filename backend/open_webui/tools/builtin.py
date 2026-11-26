@@ -804,11 +804,12 @@ async def execute_code(
         engine = await Config.get('code_interpreter.engine', 'pyodide')
         from open_webui.utils.sandboxes import sandbox_configured
 
-        terminal_id = (__metadata__ or {}).get('terminal_id')
+        selected = __metadata__ or {}
+        machine_id = selected.get('machine_id', selected.get('terminal_id'))  # terminal_id: former name
         # An explicit managed selection still fails loudly when the sandbox is missing;
         # the implicit default falls back to the configured code_interpreter engine.
         managed = await Config.get('team.enabled', False) and (
-            terminal_id == 'managed' or (terminal_id is None and await sandbox_configured())
+            machine_id == 'managed' or (machine_id is None and await sandbox_configured())
         )
         if managed:
             from open_webui.models.users import Users
@@ -817,20 +818,20 @@ async def execute_code(
             user = await Users.get_user_by_id((__user__ or {}).get('id'))
             if not user:
                 raise ValueError('Authenticated workspace owner required')
-            metadata = {**(__metadata__ or {}), 'terminal_id': 'managed'}
+            metadata = {**selected, 'machine_id': 'managed'}
             # The file dicts are shared across tool-loop rounds of this request, and a
-            # successful upload records terminal_path on them: only copy what is missing.
+            # successful upload records machine_path on them: only copy what is missing.
             pending_files = [
                 entry
                 for entry in metadata.get('files') or []
                 if isinstance(entry, dict)
                 and entry.get('id')
                 and entry.get('type') != 'filesystem'
-                and not entry.get('terminal_path')
+                and not entry.get('machine_path')
             ]
             for entry in pending_files:
-                entry.pop('terminal_error', None)
-            await upload_files_to_terminal(
+                entry.pop('machine_error', None)
+            await upload_files_to_machine(
                 __request__,
                 user,
                 pending_files,
