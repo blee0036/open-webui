@@ -57,7 +57,11 @@ def create_httpx_client(headers=None, auth=None, restricted=False):
 
 
 class OAuthTokenAuth(httpx2.Auth):
-    """Resolve current credentials per request and recover from concurrent token rotation."""
+    """Resolve current credentials per request and recover from a rejected token.
+
+    On a 401, pick up a token another request already rotated in, or else force
+    one refresh. A failed refresh drops the stored session so the user can sign in again.
+    """
 
     requires_request_body = True
 
@@ -74,6 +78,8 @@ class OAuthTokenAuth(httpx2.Auth):
 
         if response.status_code == 401:
             headers = httpx2.Headers(await self.get_headers())
+            if headers.get('Authorization') == authorization:
+                headers = httpx2.Headers(await self.get_headers(refresh=True))
             if headers.get('Authorization') and headers['Authorization'] != authorization:
                 request.headers.update(headers)
                 yield request

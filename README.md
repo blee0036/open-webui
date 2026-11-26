@@ -1,6 +1,6 @@
 <h2>Open WebUI</h2>
 
-<p>Open WebUI is <a href="https://docs.openwebui.com/"><strong>a home for AI</strong></a>: an extensible, easy-to-use, self-hosted platform built to run entirely offline. Connect local models through Ollama or use OpenAI-compatible APIs for local and cloud models.</p>
+<p>Open WebUI is <a href="https://docs.openwebui.com/"><strong>a home for AI</strong></a>: an extensible, easy-to-use, self-hosted platform built to run entirely offline. Connect local models through Ollama, use OpenAI-compatible APIs for local and cloud models, or add agents through <a href="https://docs.openwebui.com/features/open-terminal/agents">Agent Client Protocol (ACP)</a>.</p>
 
 > **Deploying this repository's team edition?** Start with the [step-by-step deployment guide (中文)](docs/DEPLOY_GUIDE.md) for multi-enterprise SSO, package quotas, and persistent agent workspaces. Use this repository's Compose setup; the generic package and image installs below do not include these customizations.
 

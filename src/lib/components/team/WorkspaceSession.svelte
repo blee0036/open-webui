@@ -1,12 +1,12 @@
 <script lang="ts">
 	import { getContext, onMount } from 'svelte';
 	import { user } from '$lib/stores';
-	import { terminalRequest, TerminalRequestError, type TerminalTarget } from '$lib/apis/terminal';
-	import { createBrowserSession, getBrowserSession } from '$lib/apis/terminal/browser';
+	import { machineRequest, MachineRequestError, type MachineTarget } from '$lib/apis/machines';
+	import { createBrowserSession, getBrowserSession } from '$lib/apis/machines/browser';
 	import XTerminal from '$lib/components/chat/XTerminal.svelte';
 	import Browser from '$lib/components/chat/Tabs/Browser.svelte';
 	import Spinner from '$lib/components/common/Spinner.svelte';
-	export let target: TerminalTarget;
+	export let target: MachineTarget;
 	export let kind: 'terminal' | 'browser';
 	const i18n = getContext<any>('i18n');
 	let sessionId = '';
@@ -22,9 +22,9 @@
 			if (id) {
 				try {
 					if (kind === 'browser') await getBrowserSession(target, id);
-					else await terminalRequest(target, `/api/terminals/${encodeURIComponent(id)}`);
+					else await machineRequest(target, `/api/terminals/${encodeURIComponent(id)}`);
 				} catch (cause) {
-					if (!(cause instanceof TerminalRequestError) || cause.status !== 404) throw cause;
+					if (!(cause instanceof MachineRequestError) || cause.status !== 404) throw cause;
 					id = '';
 				}
 			}
@@ -32,7 +32,7 @@
 				const session =
 					kind === 'browser'
 						? await createBrowserSession(target)
-						: await terminalRequest<{ id: string }>(target, '/api/terminals', {
+						: await machineRequest<{ id: string }>(target, '/api/terminals', {
 								method: 'POST'
 							});
 				id = session.id;

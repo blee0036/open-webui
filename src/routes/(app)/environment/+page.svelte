@@ -3,14 +3,14 @@
 	import { page } from '$app/stores';
 	import { goto } from '$app/navigation';
 	import { toast } from 'svelte-sonner';
-	import { terminalServers } from '$lib/stores';
+	import { machines } from '$lib/stores';
 	import {
 		teamRequest,
 		saveTeam,
 		shouldIndexProjectReference,
 		type WorkspaceStatus
 	} from '$lib/apis/team';
-	import { resolveTerminalTarget, downloadFileBlob } from '$lib/apis/terminal';
+	import { resolveMachineTarget, downloadFileBlob } from '$lib/apis/machines';
 	import { uploadFile } from '$lib/apis/files';
 	import type { Project } from '$lib/types/team';
 	import PageShell from '$lib/components/team/PageShell.svelte';
@@ -33,9 +33,9 @@
 	let reload = 0;
 	let refreshing = false;
 	$: context = scope === 'personal' ? 'local:personal-workspace' : `project:${scope}`;
-	$: connection = resolveTerminalTarget(
+	$: connection = resolveMachineTarget(
 		selector,
-		$terminalServers ?? [],
+		$machines ?? [],
 		typeof localStorage !== 'undefined' ? localStorage.token : '',
 		{ chatId: context }
 	);
@@ -171,7 +171,7 @@
 						refresh();
 					}}
 					><option value="managed">{$i18n.t('My managed workspace')}</option
-					>{#each ($terminalServers ?? []).filter((s) => s.id !== 'managed') as server}<option
+					>{#each ($machines ?? []).filter((s) => s.id !== 'managed') as server}<option
 							value={server.id || server.url}
 							>{server.name || server.url} · {$i18n.t('User-managed')}</option
 						>{/each}</select
@@ -283,7 +283,7 @@
 			>
 				{#if tab === 'files'}<FileNav
 						bind:this={fileNav}
-						terminalId={selector}
+						machineId={selector}
 						chatId={context}
 						initialDirectory="/home/user"
 						manageFileRequests={false}
