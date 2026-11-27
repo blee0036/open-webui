@@ -12,6 +12,7 @@
 	} from '$lib/apis/team';
 	import { resolveMachineTarget, downloadFileBlob } from '$lib/apis/machines';
 	import { uploadFile } from '$lib/apis/files';
+	import { formatBytes, usagePercent, usageTone, type UsageTone } from '$lib/utils/storageQuota';
 	import type { Project } from '$lib/types/team';
 	import PageShell from '$lib/components/team/PageShell.svelte';
 	import FileNav from '$lib/components/chat/FileNav.svelte';
@@ -40,6 +41,10 @@
 		{ chatId: context }
 	);
 	$: managed = selector === 'managed';
+	$: disk = managed ? workspace?.disk : undefined;
+	$: diskPercent = usagePercent(disk?.used, disk?.limit);
+	let diskTone: UsageTone;
+	$: diskTone = disk?.over ? 'full' : usageTone(diskPercent);
 	$: available = !managed || workspace?.status === 'running';
 	$: active = ['running', 'starting', 'queued'].includes(workspace?.status ?? '');
 	const states: Record<string, string> = {
@@ -75,7 +80,7 @@
 				'POST'
 			);
 			error = '';
-			if (action !== 'pause' && action !== 'resume') reload++;
+			if (!['pause', 'resume', 'rescan'].includes(action)) reload++;
 		} catch (e) {
 			error = String(e instanceof Error ? e.message : e);
 		} finally {
@@ -206,6 +211,55 @@
 		>
 			{error} <button class="underline" on:click={refresh}>{$i18n.t('Retry')}</button>
 		</div>{/if}
+	{#if disk}
+		<div class="mb-5 text-sm">
+			<div class="flex flex-wrap items-center justify-between gap-2">
+				<span class="text-base-500 dark:text-base-400">
+					{$i18n.t('Storage: this workspace {{workspace}} · all your workspaces {{total}}', {
+						workspace: formatBytes(disk.workspace_used),
+						total: formatBytes(disk.used)
+					})}{#if disk.limit !== null}
+						/ {formatBytes(disk.limit)}{/if}
+				</span>
+				{#if disk.scanned_at}<span class="text-xs text-base-400"
+						>{$i18n.t('Measured every few minutes')}</span
+					>{/if}
+			</div>
+			{#if disk.limit !== null}
+				<div class="mt-2 h-1.5 overflow-hidden rounded-full bg-black/10 dark:bg-white/10">
+					<div
+						class="h-full rounded-full {diskTone === 'full'
+							? 'bg-red-500'
+							: diskTone === 'warn'
+								? 'bg-amber-500'
+								: 'bg-emerald-600 dark:bg-emerald-400'}"
+						style:width="{Math.min(100, diskPercent ?? 0)}%"
+					></div>
+				</div>
+			{/if}
+			{#if disk.over}
+				<div
+					role="alert"
+					class="mt-3 flex flex-wrap items-center justify-between gap-3 rounded-xl bg-red-50 p-3 text-red-800 dark:bg-red-950 dark:text-red-200"
+				>
+					<span
+						>{$i18n.t(
+							'Sandbox storage is full. Agent commands are paused. Delete files in the Files or Terminal tab (for example caches, build output or downloaded data), then check again.'
+						)}</span
+					>
+					<button
+						class="shrink-0 rounded-lg bg-red-900 px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50 dark:bg-red-100 dark:text-red-950"
+						disabled={busy}
+						on:click={() => control('rescan')}>{$i18n.t('Check again')}</button
+					>
+				</div>
+			{:else if diskTone === 'warn'}
+				<p class="mt-2 text-amber-700 dark:text-amber-300" role="status">
+					{$i18n.t('Sandbox storage is almost full. Agent commands pause when it is full.')}
+				</p>
+			{/if}
+		</div>
+	{/if}
 	{#if managed}
 		<div class="mb-5 flex flex-wrap items-center gap-2 text-sm">
 			<button

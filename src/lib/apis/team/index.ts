@@ -7,6 +7,8 @@ export type QuotaPlan = {
 	allowance: number;
 	reset: { kind: 'day' | 'week' | 'month' | 'days' | 'never'; timezone: string; days?: number };
 	archived: boolean;
+	storage_bytes?: number | null;
+	sandbox_bytes?: number | null;
 };
 export type QuotaSummary = {
 	enabled: boolean;
@@ -26,6 +28,10 @@ export type QuotaSummary = {
 	};
 	pending_plan?: QuotaPlan;
 	pending_at?: number;
+	// Uploaded files (a hard cap) and sandbox home volumes (soft, measured periodically).
+	// limit null = unlimited. `sandbox` is absent when there is no managed sandbox.
+	storage?: { used: number; file_count: number; unknown_size: number; limit: number | null };
+	sandbox?: { used: number; over: boolean; scanned_at: number | null; limit: number | null } | null;
 };
 export type WorkspaceStatus = {
 	id: string;
@@ -36,6 +42,13 @@ export type WorkspaceStatus = {
 	queue_position?: number;
 	agent_status?: 'running' | 'paused' | 'queued' | 'idle';
 	agent_queue?: number;
+	disk?: {
+		used: number;
+		limit: number | null;
+		over: boolean;
+		scanned_at: number | null;
+		workspace_used: number;
+	};
 };
 
 export async function teamRequest<T = any>(path: string, options: RequestInit = {}): Promise<T> {

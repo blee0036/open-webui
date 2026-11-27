@@ -222,7 +222,7 @@ from open_webui.tasks import (
 from open_webui.utils import logger
 from open_webui.routers import team
 from open_webui.routers import enterprise_sso
-from open_webui.routers import projects, sandboxes
+from open_webui.routers import projects, sandboxes, system
 from open_webui.utils.quota_transport import model_request
 from open_webui.utils.access_control import has_permission
 from open_webui.utils.access_control.folders import has_folder_write_access
@@ -463,6 +463,10 @@ async def lifespan(app: FastAPI):
 
     app.state.periodic_quota_entry_purge = asyncio.create_task(periodic_quota_entry_purge())
 
+    from open_webui.utils.storage_quota import periodic_sandbox_limit_sync
+
+    app.state.periodic_sandbox_limit_sync = asyncio.create_task(periodic_sandbox_limit_sync())
+
     from open_webui.utils.automations import scheduler_worker_loop
 
     app.state.scheduler_worker_loop = asyncio.create_task(scheduler_worker_loop(app))
@@ -563,6 +567,7 @@ async def lifespan(app: FastAPI):
     app.state.periodic_usage_pool_cleanup.cancel()
     app.state.periodic_session_pool_cleanup.cancel()
     app.state.periodic_quota_entry_purge.cancel()
+    app.state.periodic_sandbox_limit_sync.cancel()
     app.state.scheduler_worker_loop.cancel()
 
     await publish_event(request, EVENTS.SYSTEM_SHUTDOWN_COMPLETED, source='system')
@@ -885,6 +890,7 @@ app.include_router(team.router, prefix='/api/v1/team', tags=['team'])
 app.include_router(enterprise_sso.router, prefix='/api/v1/enterprise', tags=['enterprise'])
 app.include_router(projects.router, prefix='/api/v1/projects', tags=['projects'])
 app.include_router(sandboxes.router, prefix='/api/v1/sandboxes', tags=['sandboxes'])
+app.include_router(system.router, prefix='/api/v1/system', tags=['system'])
 from open_webui.routers import personal_connections
 app.include_router(personal_connections.router, prefix='/api/v1/personal-connections', tags=['personal connections'])
 app.include_router(automations.router, prefix='/api/v1/automations', tags=['automations'])

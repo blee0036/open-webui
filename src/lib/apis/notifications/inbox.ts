@@ -13,6 +13,9 @@ export type InboxItem = {
 	preview: string;
 	data: {
 		message?: string;
+		// System announcements may carry an i18n key with values; message is the fallback.
+		key?: string;
+		params?: Record<string, string>;
 		message_id?: string;
 		model_name?: string;
 		parent_id?: string;

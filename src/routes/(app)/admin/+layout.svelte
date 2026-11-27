@@ -8,7 +8,7 @@
 
 	import Sidebar from '$lib/components/icons/Sidebar.svelte';
 
-	const i18n = getContext('i18n');
+	const i18n = getContext<any>('i18n');
 
 	let loaded = false;
 
@@ -90,6 +90,13 @@
 								? ''
 								: 'text-gray-400 dark:text-gray-500'}"
 							href="/admin/team">{$i18n.t('Team & quota')}</a
+						>
+						<a
+							draggable="false"
+							class="min-w-fit px-1 text-sm {$page.url.pathname.includes('/admin/system')
+								? ''
+								: 'text-base-300 dark:text-base-600 hover:text-base-700 dark:hover:text-base-0'} transition select-none"
+							href="/admin/system">{$i18n.t('System')}</a
 						>
 						{#if $config?.features?.enable_functions}
 							<a

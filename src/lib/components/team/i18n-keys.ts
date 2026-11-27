@@ -16,6 +16,19 @@
 // t('days')
 // t('never')
 
+// Administrator sandbox actions (QuotaAudit.action, routers/system.py)
+// t('sandbox_stop')
+// t('sandbox_recreate')
+// t('sandbox_clear')
+
+// Inbox notices for the member whose workspace an administrator changed (routers/system.py NOTICES)
+// t('An administrator stopped your workspace "{{workspace}}". Your files are kept; it starts again when you use it.')
+// t('An administrator restarted your workspace "{{workspace}}" with a fresh runtime. Your files are kept.')
+// t('An administrator cleared your workspace "{{workspace}}". Its files were deleted.')
+// t('An administrator stopped your personal workspace. Your files are kept; it starts again when you use it.')
+// t('An administrator restarted your personal workspace with a fresh runtime. Your files are kept.')
+// t('An administrator cleared your personal workspace. Its files were deleted.')
+
 // Adjustment history actions (QuotaAudit.action)
 // t('default_plan')
 // t('create_plan')

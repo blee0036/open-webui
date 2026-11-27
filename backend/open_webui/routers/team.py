@@ -28,6 +28,7 @@ from open_webui.utils.quota_pricing import (
     validate_price,
 )
 from open_webui.utils.quotas import add_bonus, assign_plan, quota_summary, record, settle
+from open_webui.utils.storage_quota import file_usage, sandbox_disk, schedule_sandbox_limit_sync, user_limits
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import and_, func, or_, select, update
 
@@ -51,6 +52,9 @@ class PlanForm(AdjustmentForm):
     allowance: int = Field(ge=0, le=MAX_QUOTA)
     reset: dict = Field(default_factory=lambda: {'kind': 'month', 'timezone': 'Asia/Singapore'})
     archived: bool = False
+    # Bytes; None is unlimited.
+    storage_bytes: int | None = Field(default=None, ge=0, le=2**62)
+    sandbox_bytes: int | None = Field(default=None, ge=0, le=2**62)
 
     @field_validator('unit')
     @classmethod
@@ -158,12 +162,24 @@ async def set_settings(form: SettingsForm, user=Depends(get_admin_user)):
     from open_webui.utils.team_policy import initialize_team_permissions
 
     await initialize_team_permissions()
+    schedule_sandbox_limit_sync()
     return await settings(user)
+
+
+async def storage_summary(user):
+    """Uploaded-file and sandbox storage against the member's package caps, for every quota view."""
+    limits = await user_limits(user)
+    files = await file_usage(user.id)
+    result = {'storage': {**files, 'limit': limits['storage_bytes']}}
+    sandbox = await sandbox_disk(user.id)
+    if sandbox is not None:
+        result['sandbox'] = {**sandbox, 'limit': limits['sandbox_bytes']}
+    return result
 
 
 @router.get('/quota/me')
 async def my_quota(user=Depends(get_verified_user)):
-    return await quota_summary(user.id)
+    return {**await quota_summary(user.id), **await storage_summary(user)}
 
 
 @router.get('/prices')
@@ -255,6 +271,7 @@ async def create_plan(form: PlanForm, user=Depends(get_admin_user)):
             )
         )
         await db.commit()
+        schedule_sandbox_limit_sync()
         return record(row)
 
 
@@ -284,6 +301,7 @@ async def update_plan(plan_id: str, form: PlanForm, user=Depends(get_admin_user)
             )
         )
         await db.commit()
+        schedule_sandbox_limit_sync()
         return record(row)
 
 
@@ -392,7 +410,9 @@ async def set_plan(user_id: str, form: AssignmentForm, user=Depends(get_admin_us
     async with get_async_db() as db:
         if not await db.get(User, user_id):
             raise HTTPException(404, 'User not found')
-    return await assign_plan(user_id, form.plan_id, user.id, effective_at=form.effective_at, reason=form.reason)
+    result = await assign_plan(user_id, form.plan_id, user.id, effective_at=form.effective_at, reason=form.reason)
+    schedule_sandbox_limit_sync()
+    return result
 
 
 @router.post('/admin/users/{user_id}/bonus')

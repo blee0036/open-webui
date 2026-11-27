@@ -3,6 +3,8 @@
 	import { getMyQuota, quotaAmount, quotaDate, type QuotaSummary } from '$lib/apis/team';
 	import PageShell from '$lib/components/team/PageShell.svelte';
 	import UsageDashboard from '$lib/components/team/usage/UsageDashboard.svelte';
+	import StorageUsage from '$lib/components/team/StorageUsage.svelte';
+	import { rememberQuota } from '$lib/utils/storageQuota';
 	const i18n = getContext<any>('i18n');
 	let quota: QuotaSummary | null = null;
 	let error = '';
@@ -11,6 +13,7 @@
 		loading = true;
 		try {
 			quota = await getMyQuota();
+			rememberQuota(quota);
 			error = '';
 		} catch (e) {
 			error = String(e instanceof Error ? e.message : e);
@@ -104,6 +107,12 @@
 		{:else if quota}<p class="text-gray-500">
 				{$i18n.t('No quota package has been configured.')}
 			</p>{/if}
+		{#if quota?.storage || quota?.sandbox}
+			<section>
+				<h2 class="mb-4 text-lg font-medium">{$i18n.t('Storage')}</h2>
+				<StorageUsage {quota} onRefresh={refresh} />
+			</section>
+		{/if}
 		<section>
 			<h2 class="mb-4 text-lg font-medium">{$i18n.t('Usage')}</h2>
 			<UsageDashboard />

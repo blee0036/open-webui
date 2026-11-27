@@ -48,6 +48,9 @@ class QuotaPlan(Base):
     allowance = Column(BigInteger, nullable=False)
     reset = Column(JSON, nullable=False)
     archived = Column(Boolean, nullable=False, default=False)
+    # Storage caps in bytes; NULL is unlimited. Uploaded files are a hard limit, sandbox homes a soft one.
+    storage_bytes = Column(BigInteger, nullable=True)
+    sandbox_bytes = Column(BigInteger, nullable=True)
     created_at = Column(BigInteger, nullable=False)
     updated_at = Column(BigInteger, nullable=False)
 

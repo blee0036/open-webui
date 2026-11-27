@@ -99,6 +99,24 @@ async def controller_request(user, project, method='GET', body=None):
             raise HTTPException(503, 'Workspace controller is unavailable; existing files are retained') from error
 
 
+async def admin_controller_request(path, method='GET', body=None, timeout=60):
+    """Controller administration. Callers must already have checked for a WebUI admin;
+    unlike controller_request this is not scoped to the caller's own workspaces."""
+    url, key = await controller_config()
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=timeout), trust_env=False) as session:
+        try:
+            async with session.request(
+                method, f'{url}{path}', json=body, headers={'Authorization': f'Bearer {key}'}, allow_redirects=False
+            ) as response:
+                data = await response.json(content_type=None)
+                if response.status >= 400:
+                    detail = data.get('detail') if isinstance(data, dict) else None
+                    raise HTTPException(response.status, detail or 'Workspace controller request failed')
+                return data
+        except (aiohttp.ClientError, TimeoutError, ValueError) as error:
+            raise HTTPException(503, 'Workspace controller is unavailable') from error
+
+
 async def sandbox_python(user, metadata, payload):
     scope = await workspace_scope(user, metadata)
     url, key = await controller_config()

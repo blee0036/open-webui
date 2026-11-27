@@ -13,6 +13,7 @@
 		CREDITS_PER_USD,
 		type QuotaPlan
 	} from '$lib/apis/team';
+	import { formatBytes, GB } from '$lib/utils/storageQuota';
 	import { getBackendConfig } from '$lib/apis';
 	import { config } from '$lib/stores';
 	import {
@@ -70,8 +71,17 @@
 			timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Shanghai',
 			days: 30
 		},
-		archived: false
+		archived: false,
+		storage_bytes: null as number | null,
+		sandbox_bytes: null as number | null
 	});
+	// Storage caps are entered in GB; an empty field is unlimited.
+	const gbInput = (bytes: number | null | undefined) =>
+		bytes === null || bytes === undefined ? '' : Number((bytes / GB).toFixed(3));
+	const gbStored = (value: string) =>
+		value.trim() === '' ? null : Math.max(0, Math.round(Number(value) * GB));
+	const storageLabel = (bytes: number | null | undefined) =>
+		bytes === null || bytes === undefined ? $i18n.t('Unlimited') : formatBytes(bytes);
 
 	$: active = plans.filter((plan) => !plan.archived);
 	// A package that never resets only switches at an explicit time.
@@ -244,6 +254,7 @@
 					<th class={th}>{$i18n.t('Metering')}</th>
 					<th class="{th} text-right">{$i18n.t('Allowance')}</th>
 					<th class={th}>{$i18n.t('Reset')}</th>
+					<th class={th}>{$i18n.t('Storage')}</th>
 					<th class="{th} text-right">{$i18n.t('Members')}</th>
 					<th class={th}>{$i18n.t('Status')}</th>
 					<th class="{th} text-right">{$i18n.t('Actions')}</th>
@@ -269,6 +280,14 @@
 						<td class={td}>
 							<div>{resetLabel(plan.reset)}</div>
 							<div class="text-xs text-gray-500">{plan.reset.timezone}</div>
+						</td>
+						<td class={td}>
+							<div class="text-xs">
+								{$i18n.t('Files')}: {storageLabel(plan.storage_bytes)}
+							</div>
+							<div class="text-xs text-gray-500">
+								{$i18n.t('Sandbox')}: {storageLabel(plan.sandbox_bytes)}
+							</div>
 						</td>
 						<td class="{td} text-right tabular-nums">
 							<div>{(plan.members ?? 0).toLocaleString()}</div>
@@ -425,6 +444,37 @@
 						>
 					{/if}
 				</div>
+				<div class="grid grid-cols-2 gap-3">
+					<label class="text-sm"
+						><span class="text-xs text-gray-500">{$i18n.t('File storage (GB)')}</span>
+						<input
+							class="{field} mt-1"
+							type="number"
+							min="0"
+							step="0.1"
+							placeholder={$i18n.t('Unlimited')}
+							value={gbInput(editor.storage_bytes)}
+							on:input={(e) => (editor.storage_bytes = gbStored(e.currentTarget.value))}
+						/></label
+					>
+					<label class="text-sm"
+						><span class="text-xs text-gray-500">{$i18n.t('Sandbox storage (GB)')}</span>
+						<input
+							class="{field} mt-1"
+							type="number"
+							min="0"
+							step="0.1"
+							placeholder={$i18n.t('Unlimited')}
+							value={gbInput(editor.sandbox_bytes)}
+							on:input={(e) => (editor.sandbox_bytes = gbStored(e.currentTarget.value))}
+						/></label
+					>
+				</div>
+				<p class="text-xs leading-5 text-gray-500">
+					{$i18n.t(
+						'Uploads past the file limit are refused. Sandbox storage is measured every few minutes across all workspaces of each member; past the limit, Agent commands pause until they free space. Leave empty for no limit. Administrators are exempt.'
+					)}
+				</p>
 				{#if editorId}
 					<p class="rounded-lg bg-gray-50 px-3 py-2 text-xs text-gray-500 dark:bg-gray-850/50">
 						{$i18n.t(

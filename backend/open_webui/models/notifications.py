@@ -61,6 +61,9 @@ class ChatMentionData(NotificationData):
 
 class SystemData(NotificationData):
     message: str = Field(min_length=1, max_length=2000)
+    # Optional i18n key and interpolation values; the inbox translates it and falls back to message.
+    key: str | None = Field(default=None, max_length=500)
+    params: dict[str, str] | None = None
 
 
 DATA_TYPES = {

@@ -10,6 +10,7 @@ import json
 import os
 import re
 import secrets
+import shutil
 import sqlite3
 import time
 import uuid
@@ -65,6 +66,8 @@ STATUS_WAIT_LIMIT = 300
 # WebUI has no tool-call timeout by default, so an unbounded wait looks like a hung command.
 AGENT_WAIT = float(os.environ.get('SANDBOX_AGENT_WAIT_SECONDS', '60'))
 MONITOR_SECONDS = float(os.environ.get('SANDBOX_MONITOR_SECONDS', '20'))
+# Home volumes have no kernel quota; their sizes are measured this often (a soft limit).
+DISK_SCAN_SECONDS = float(os.environ.get('SANDBOX_DISK_SCAN_SECONDS', '300'))
 state_dir = Path(os.environ.get('SANDBOX_STATE_DIR', '/state'))
 state_dir.mkdir(parents=True, exist_ok=True)
 state = sqlite3.connect(state_dir / 'workspaces.db')
@@ -77,7 +80,12 @@ state.execute("""CREATE TABLE IF NOT EXISTS workspace (
 state.execute("""CREATE TABLE IF NOT EXISTS probe_cache (
     scope TEXT NOT NULL, path TEXT NOT NULL, status INTEGER NOT NULL, body BLOB NOT NULL,
     PRIMARY KEY(scope, path))""")
+# Per-user sandbox storage caps pushed by WebUI from each member's package; absent = unlimited.
+state.execute('CREATE TABLE IF NOT EXISTS user_limit (user_id TEXT PRIMARY KEY, sandbox_bytes INTEGER NOT NULL)')
 state.commit()
+# Last measured home-volume size per workspace id, and when the scan finished (epoch seconds).
+disk_usage = {}
+disk_scanned_at = None
 locks = {}
 lifecycle_locks = {}
 resumed = {}
@@ -129,9 +137,73 @@ MANUAL_MESSAGE = (
 )
 
 
+def format_bytes(value):
+    for unit in ('B', 'KB', 'MB', 'GB', 'TB'):
+        if abs(value) < 1024 or unit == 'TB':
+            return f'{value:.0f} {unit}' if unit == 'B' else f'{value:.1f} {unit}'
+        value /= 1024
+
+
+def disk_state(user_id):
+    """The member's measured sandbox storage across all their workspaces against their cap."""
+    ids = [row[0] for row in state.execute('SELECT id FROM workspace WHERE user_id=?', (user_id,))]
+    used = sum(disk_usage.get(identifier, 0) for identifier in ids)
+    limit_row = state.execute('SELECT sandbox_bytes FROM user_limit WHERE user_id=?', (user_id,)).fetchone()
+    limit = limit_row[0] if limit_row else None
+    return {
+        'used': used,
+        'limit': limit,
+        'over': limit is not None and disk_scanned_at is not None and used > limit,
+        'scanned_at': disk_scanned_at,
+    }
+
+
+def quota_message(disk):
+    return (
+        f'Sandbox storage is full: {format_bytes(disk["used"])} used of {format_bytes(disk["limit"])} '
+        'across your workspaces, so Agent commands are paused. Tell the user to delete files in the '
+        'workspace terminal or file panel (or clear the workspace), or to ask an administrator for more '
+        'space. Agent commands resume after the next storage check.'
+    )
+
+
+def scan_volumes():
+    """Measured size of every home volume this controller owns, keyed by workspace id."""
+    prefix, suffix = NAMESPACE + '-ws-', '-home'
+    sizes = {}
+    with client() as api:
+        for volume in api.df().get('Volumes') or []:
+            volume_name = volume.get('Name') or ''
+            labels = volume.get('Labels') or {}
+            if not (volume_name.startswith(prefix) and volume_name.endswith(suffix)):
+                continue
+            if any(labels.get(key) != value for key, value in LABEL.items()):
+                continue
+            size = (volume.get('UsageData') or {}).get('Size', -1)
+            sizes[volume_name[len(prefix) : -len(suffix)]] = max(0, int(size if size is not None else 0))
+    return sizes
+
+
+async def disk_monitor():
+    global disk_scanned_at
+    while True:
+        try:
+            # docker df walks every volume; keep it off the event loop and out of request paths.
+            disk_usage.clear()
+            disk_usage.update(await asyncio.to_thread(scan_volumes))
+            disk_scanned_at = int(time.time())
+        except Exception as error:
+            print(f'Sandbox storage scan failed: {error}', flush=True)
+        await asyncio.sleep(DISK_SCAN_SECONDS)
+
+
 @asynccontextmanager
 async def agent_execution(row):
     identifier = row['id']
+    disk = disk_state(row['user_id'])
+    if disk['over']:
+        # Manual terminals and file deletion keep working, so the user can clean up.
+        raise Busy(quota_message(disk))
     if identifier in manual:
         raise Busy(MANUAL_MESSAGE)
     lock = locks.setdefault(identifier, asyncio.Lock())
@@ -589,12 +661,13 @@ async def lifespan(app):
     state.execute("UPDATE workspace SET status='stopped', error=NULL")
     state.commit()
     task = asyncio.create_task(idle_monitor())
+    disk = asyncio.create_task(disk_monitor())
     # Pull a new image now rather than inside the first start, which holds the global Docker lock.
     pull = asyncio.create_task(asyncio.to_thread(prepull_images))
     try:
         yield
     finally:
-        for background in (task, pull):
+        for background in (task, disk, pull):
             background.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await background
@@ -612,14 +685,18 @@ def prepull_images():
 app = FastAPI(lifespan=lifespan, dependencies=[Depends(authenticate)])
 
 
+@app.exception_handler(Busy)
+async def busy_handler(request, error):
+    # Returned to the model and the UI as-is, so it must read as an instruction to a person.
+    return JSONResponse({'status': 'busy', 'error': str(error), 'detail': str(error)}, status_code=503)
+
+
 @app.get('/health')
 async def health():
     return {'running': len(active), 'queued': len(queue), 'limit': MAX_RUNNING}
 
 
-@app.get('/workspaces/{user}/{project}')
-async def status(user: str, project: str):
-    row = workspace(user, project)
+def workspace_state(row):
     return {key: row.get(key) for key in ('id', 'status', 'public', 'error')} | {
         'manual': row['id'] in manual,
         'agent_status': 'running'
@@ -634,14 +711,46 @@ async def status(user: str, project: str):
     }
 
 
+@app.get('/workspaces/{user}/{project}')
+async def status(user: str, project: str):
+    row = workspace(user, project)
+    return workspace_state(row) | {
+        'disk': disk_state(user) | {'workspace_used': disk_usage.get(row['id'], 0)},
+    }
+
+
 class Control(BaseModel):
     action: str
     confirm: str | None = None
 
 
+RESCAN_INTERVAL = 30
+last_rescan = 0.0
+
+
+async def rescan_now():
+    """Re-measure on request (after the user cleaned up), at most once per RESCAN_INTERVAL."""
+    global disk_scanned_at, last_rescan
+    if time.monotonic() - last_rescan < RESCAN_INTERVAL:
+        return
+    last_rescan = time.monotonic()
+    sizes = await asyncio.to_thread(scan_volumes)
+    disk_usage.clear()
+    disk_usage.update(sizes)
+    disk_scanned_at = int(time.time())
+
+
 @app.post('/workspaces/{user}/{project}')
 async def control(user: str, project: str, form: Control):
-    row = workspace(user, project)
+    if form.action == 'rescan':
+        with contextlib.suppress(Exception):
+            await rescan_now()
+        return await status(user, project)
+    await apply_control(workspace(user, project), form)
+    return await status(user, project)
+
+
+async def apply_control(row, form):
     identifier = row['id']
     lock = locks.setdefault(identifier, asyncio.Lock())
     if form.action == 'start':
@@ -683,6 +792,8 @@ async def control(user: str, project: str, form: Control):
                         if any(volume.attrs.get('Labels', {}).get(k) != v for k, v in LABEL.items()):
                             raise HTTPException(409, 'Volume ownership mismatch')
                         await docker_call(volume.remove)
+                # The volume is gone; do not keep blocking the Agent until the next scan.
+                disk_usage[identifier] = 0
             if form.action in {'public', 'offline'}:
                 row['public'] = int(form.action == 'public')
                 state.execute('UPDATE workspace SET public=? WHERE id=?', (row['public'], identifier))
@@ -695,7 +806,131 @@ async def control(user: str, project: str, form: Control):
                 capacity.notify_all()
     else:
         raise HTTPException(400, 'Unknown workspace action')
-    return await status(user, project)
+
+
+# ---------------------------------------------------------------------------
+# Administration (WebUI admins only; WebUI holds the controller key and checks the role).
+# ---------------------------------------------------------------------------
+ADMIN_ACTIONS = {'stop', 'recreate', 'clear'}
+
+
+class Limits(BaseModel):
+    limits: dict[str, int | None]
+
+
+@app.put('/admin/limits')
+async def set_limits(form: Limits):
+    """Replace every member's sandbox storage cap (idempotent; WebUI pushes the full map)."""
+    rows = [(user_id, int(value)) for user_id, value in form.limits.items() if value is not None and value >= 0]
+    state.execute('DELETE FROM user_limit')
+    state.executemany('INSERT INTO user_limit (user_id, sandbox_bytes) VALUES (?,?)', rows)
+    state.commit()
+    return {'count': len(rows)}
+
+
+@app.get('/admin/users/{user_id}/disk')
+async def user_disk(user_id: str):
+    """Read-only: never creates a workspace row (the quota badge polls this)."""
+    return disk_state(user_id)
+
+
+def container_memory():
+    """Memory use of this controller's running runtimes, keyed by workspace id."""
+    prefix = NAMESPACE + '-ws-'
+    usage = {}
+    with client() as api:
+        filters = {'label': [f'{key}={value}' for key, value in LABEL.items()], 'status': 'running'}
+        for container in api.containers.list(filters=filters):
+            if not container.name.startswith(prefix):
+                continue
+            try:
+                stats = container.stats(stream=False)
+            except Exception:
+                continue
+            memory = stats.get('memory_stats') or {}
+            # Page cache is reclaimable; report what the kernel would actually need to keep.
+            cache = (memory.get('stats') or {}).get('inactive_file', 0)
+            usage[container.name.removeprefix(prefix)] = {
+                'used': max(0, memory.get('usage', 0) - cache),
+                'limit': memory.get('limit'),
+            }
+    return usage
+
+
+@app.get('/admin/workspaces')
+async def admin_workspaces():
+    try:
+        memory = await asyncio.wait_for(asyncio.to_thread(container_memory), 20)
+    except Exception:
+        memory = {}
+    now = time.monotonic()
+    result = []
+    for db_row in state.execute('SELECT * FROM workspace ORDER BY user_id, project_id').fetchall():
+        db_row = dict(db_row)
+        # The cached row is the live one (it carries the runtime address); fall back to the stored state.
+        row = workspaces.get((db_row['user_id'], db_row['project_id']), db_row)
+        identifier = row['id']
+        result.append(
+            workspace_state(row)
+            | {
+                'user_id': row['user_id'],
+                'project_id': row['project_id'],
+                'disk': disk_usage.get(identifier),
+                'memory': memory.get(identifier),
+                'idle_seconds': int(now - last_used[identifier]) if identifier in last_used else None,
+            }
+        )
+    users = {item['user_id'] for item in result}
+    return {
+        'workspaces': result,
+        'users': {user_id: disk_state(user_id) for user_id in users},
+        'scanned_at': disk_scanned_at,
+        'scan_interval': DISK_SCAN_SECONDS,
+        'running': len(active),
+        'queued': len(queue),
+        'limit': MAX_RUNNING,
+        'memory_per_workspace': MEMORY,
+    }
+
+
+def host_info():
+    with client() as api:
+        info = api.info()
+        df = api.df()
+    volumes = [v for v in df.get('Volumes') or [] if all((v.get('Labels') or {}).get(k) == x for k, x in LABEL.items())]
+    disk = shutil.disk_usage(state_dir)
+    return {
+        'docker_version': info.get('ServerVersion'),
+        'cpus': info.get('NCPU'),
+        'memory_total': info.get('MemTotal'),
+        'docker_root': info.get('DockerRootDir'),
+        'images_size': df.get('LayersSize'),
+        'sandbox_volumes': len(volumes),
+        'sandbox_volumes_size': sum(max(0, (v.get('UsageData') or {}).get('Size') or 0) for v in volumes),
+        # The controller's state volume lives on the Docker data disk, so this is that disk's free space.
+        'disk': {'total': disk.total, 'used': disk.used, 'free': disk.free},
+    }
+
+
+@app.get('/admin/host')
+async def admin_host():
+    try:
+        host = await asyncio.wait_for(asyncio.to_thread(host_info), 30)
+    except Exception as error:
+        raise HTTPException(503, f'Docker is unavailable: {error}') from error
+    return host | {'running': len(active), 'queued': len(queue), 'limit': MAX_RUNNING}
+
+
+@app.post('/admin/workspaces/{identifier}')
+async def admin_control(identifier: str, form: Control):
+    if form.action not in ADMIN_ACTIONS:
+        raise HTTPException(400, 'Unknown administrator action')
+    db_row = state.execute('SELECT user_id, project_id FROM workspace WHERE id=?', (identifier,)).fetchone()
+    if db_row is None:
+        raise HTTPException(404, 'Workspace not found')
+    row = workspace(db_row['user_id'], db_row['project_id'])
+    await apply_control(row, form)
+    return workspace_state(row) | {'user_id': row['user_id'], 'project_id': row['project_id']}
 
 
 HOP_HEADERS = {

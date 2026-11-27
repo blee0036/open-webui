@@ -94,6 +94,8 @@ services:
       SANDBOX_EXECUTION_SECONDS: ${SANDBOX_EXECUTION_SECONDS:-1800}
       # An Agent command waits at most this long for a free slot or the workspace's previous command.
       SANDBOX_AGENT_WAIT_SECONDS: ${SANDBOX_AGENT_WAIT_SECONDS:-60}
+      # How often home-volume sizes are measured for the per-package sandbox storage limit (soft).
+      SANDBOX_DISK_SCAN_SECONDS: ${SANDBOX_DISK_SCAN_SECONDS:-300}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - team-sandbox-state:/state

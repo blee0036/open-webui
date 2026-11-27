@@ -224,7 +224,10 @@
 								? 'line-clamp-1'
 								: ''} whitespace-pre-wrap break-words text-xs leading-[1.125rem] text-base-500 dark:text-base-400"
 						>
-							{item.preview || item.data.message}
+							{item.preview ||
+								(item.data.key
+									? $i18n.t(item.data.key, item.data.params ?? {})
+									: item.data.message)}
 						</div>
 					{/if}
 				</div>

@@ -1,5 +1,11 @@
 import { WEBUI_API_BASE_URL } from '$lib/constants';
 import { splitStream } from '$lib/utils';
+import {
+	isStorageQuotaError,
+	noteUploaded,
+	precheckUpload,
+	storageQuotaMessage
+} from '$lib/utils/storageQuota';
 
 export const uploadFile = async (
 	token: string,
@@ -9,6 +15,10 @@ export const uploadFile = async (
 	stream: boolean = true,
 	onUploaded?: (uploadedFile: { id: string }) => void
 ) => {
+	// Refuse before sending bytes when the storage cap is already known to be too small.
+	const refusal = await precheckUpload(file.size);
+	if (refusal) throw refusal;
+
 	const data = new FormData();
 	data.append('file', file);
 	if (metadata) {
@@ -35,7 +45,10 @@ export const uploadFile = async (
 			return res.json();
 		})
 		.catch((err) => {
-			error = err.detail || err.message;
+			// The structured 413 becomes a sentence; callers show errors with `${e}`.
+			error = isStorageQuotaError(err?.detail)
+				? storageQuotaMessage(err.detail)
+				: err.detail || err.message;
 			console.error(err);
 			return null;
 		});
@@ -45,6 +58,7 @@ export const uploadFile = async (
 	}
 
 	if (res) {
+		noteUploaded(file.size);
 		onUploaded?.(res);
 	}
 

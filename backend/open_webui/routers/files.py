@@ -53,6 +53,7 @@ from open_webui.routers.retrieval import ProcessFileForm, index_file, process_fi
 from open_webui.storage.provider import Storage
 from open_webui.utils.auth import get_admin_user, get_verified_user
 from open_webui.utils.misc import strict_match_mime_type
+from open_webui.utils.storage_quota import check_file_quota
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -313,6 +314,7 @@ async def upload_file(
         user=user,
         background_tasks=background_tasks,
         db=db,
+        enforce_storage_quota=True,
     )
 
     if isinstance(result, dict):
@@ -346,6 +348,9 @@ async def upload_file_handler(
     user=Depends(get_verified_user),
     background_tasks: Optional[BackgroundTasks] = None,
     db: Optional[AsyncSession] = None,
+    # Only member uploads are refused at the cap. Generated media and internal copies are
+    # still counted, but refusing them would discard output that was already paid for.
+    enforce_storage_quota: bool = False,
 ):
     log.info('file.content_type: %s %s', file.content_type, process)
 
@@ -390,6 +395,10 @@ async def upload_file_handler(
                 raise HTTPException(403, ERROR_MESSAGES.ACCESS_PROHIBITED)
             await check_knowledge_upload_limits(knowledge_id, 1, batch=True, file_size=file.size, db=db)
 
+        if enforce_storage_quota:
+            # Before writing, from the declared size; rechecked below against the bytes stored.
+            await check_file_quota(user, file.size, db=db)
+
         # Prefer readable storage names for admins, but fall back if the filesystem rejects it.
         id = str(uuid.uuid4())
         name = filename
@@ -431,6 +440,13 @@ async def upload_file_handler(
         if knowledge_id:
             try:
                 await check_knowledge_upload_limits(knowledge_id, 0, file_size=len(contents), db=db)
+            except HTTPException:
+                await asyncio.to_thread(Storage.delete_file, file_path)
+                raise
+
+        if enforce_storage_quota and file.size != len(contents):
+            try:
+                await check_file_quota(user, len(contents), db=db)
             except HTTPException:
                 await asyncio.to_thread(Storage.delete_file, file_path)
                 raise
