@@ -175,7 +175,7 @@
 						<th class={th}>{$i18n.t('Member')}</th>
 						<th class={th}>{$i18n.t('Workspace')}</th>
 						<th class={th}>{$i18n.t('Status')}</th>
-						<th class="{th} min-w-36">{$i18n.t('Memory')}</th>
+						<th class="{th} min-w-36">{$i18n.t('RAM')}</th>
 						<th class="{th} text-right">{$i18n.t('Disk')}</th>
 						<th class={th}>{$i18n.t('Last used')}</th>
 						<th class="{th} text-right">{$i18n.t('Actions')}</th>

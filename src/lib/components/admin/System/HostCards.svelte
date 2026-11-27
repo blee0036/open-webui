@@ -34,7 +34,7 @@
 		<div class="mt-4 space-y-4">
 			<div>
 				<div class={metric}>
-					<span>{$i18n.t('Memory')}</span>
+					<span>{$i18n.t('RAM')}</span>
 					<span class="tabular-nums"
 						>{formatBytes(memoryUsed)} / {formatBytes(host.memory.total)}</span
 					>
@@ -42,7 +42,7 @@
 				<div class="mt-1.5"><UsageBar used={memoryUsed} total={host.memory.total} warn={85} /></div>
 				<p class="{label} mt-1">
 					{$i18n.t('{{free}} available', { free: formatBytes(host.memory.available) })}
-					{#if host.swap.total}· {$i18n.t('Swap')}
+					{#if host.swap.total}· {$i18n.t('Swap space')}
 						{formatBytes(host.swap.used)} / {formatBytes(host.swap.total)}{/if}
 				</p>
 			</div>
@@ -144,7 +144,7 @@
 						</dd>
 					</div>
 					<div>
-						<dt class={label}>{$i18n.t('Images')}</dt>
+						<dt class={label}>{$i18n.t('Container images')}</dt>
 						<dd class="tabular-nums">{formatBytes(sandbox.images_size)}</dd>
 					</div>
 				</dl>
